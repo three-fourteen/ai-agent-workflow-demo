@@ -5,8 +5,7 @@ Goal: landing page
 Context:
 Create the main landing page for the simple SaaS flow. Include hero section, features list, and a call to action.
 
-Dependencies:
-None
+Dependencies: none
 
 Subtasks:
 

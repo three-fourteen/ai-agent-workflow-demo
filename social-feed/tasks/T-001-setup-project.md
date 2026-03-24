@@ -5,8 +5,7 @@ Goal: setup project
 Context:
 Initialize the project structure and dependencies for the social feed application.
 
-Dependencies:
-None
+Dependencies: none
 
 Subtasks:
 
