@@ -106,9 +106,76 @@ Codex → finishes
 
 ---
 
+# CLI
+
+A zero-dependency Python CLI for scaffolding and managing projects.
+
+```
+python cli/agent_workflow.py init <project> [--description "..."]
+python cli/agent_workflow.py task add <project> <title> [--description "..."] [--after T-001]
+python cli/agent_workflow.py status [project]
+python cli/agent_workflow.py start <project>
+```
+
+### init
+
+Scaffolds a new project with the full `.ai/` structure and an empty `tasks/` directory.
+
+```
+python cli/agent_workflow.py init my-app --description "A SaaS for team time tracking"
+```
+
+### task add
+
+Creates the next numbered task file (`T-001-...`, `T-002-...`, etc.) and sets it as `current_task` if none is active.
+
+```
+python cli/agent_workflow.py task add my-app "Setup project"
+python cli/agent_workflow.py task add my-app "Build dashboard" --after T-001
+```
+
+### status
+
+Prints an overview of all projects in the current directory.
+
+```
+Project        Phase      Current Task                 Done   Blocked
+---------------------------------------------------------------------
+my-app         prototype  T-001-setup-project          0/2    no
+social-feed    prototype  T-001-setup-project          0/4    no
+```
+
+### start
+
+Prints a ready-to-paste prompt to kick off any AI agent on a project.
+
+```
+python cli/agent_workflow.py start my-app
+```
+
+```
+Navigate to my-app/ and follow .ai/AGENT_START_HERE.md to begin working.
+Current state: phase=prototype, current_task=T-001-setup-project, blocked=false.
+Completed: 0/2 tasks.
+```
+
+---
+
 # How to try it
 
-Open one of the project folders (for example `social-feed/`) and ask your AI coding agent to:
+**Option A — use the CLI to create a new project:**
+
+```
+python cli/agent_workflow.py init my-project --description "describe your project"
+python cli/agent_workflow.py task add my-project "Setup project"
+python cli/agent_workflow.py start my-project
+```
+
+Paste the output of `start` into your AI coding agent and it will take it from there.
+
+**Option B — use one of the included demo projects:**
+
+Open a project folder (for example `social-feed/`) and ask your AI coding agent to:
 
 ```
 Follow .ai/AGENT_START_HERE.md
@@ -117,9 +184,9 @@ Follow .ai/AGENT_START_HERE.md
 The agent will:
 
 1. Read the current project state
-2. open the active task
-3. execute the subtasks
-4. update the workflow state
+2. Open the active task
+3. Execute the subtasks
+4. Update the workflow state
 
 Tested with:
 
@@ -136,6 +203,9 @@ ai-agent-workflow-demo
 │
 ├─ README.md
 ├─ LICENSE
+│
+├─ cli/
+│   └─ agent_workflow.py
 │
 ├─ docs/
 │   └─ workflow-diagram.png
