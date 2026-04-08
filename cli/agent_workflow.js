@@ -161,6 +161,20 @@ function nextTaskId(projectDir) {
   return countTasks(projectDir) + 1;
 }
 
+/**
+ * Returns the correct command prefix for "next steps" hints.
+ * When run via `npx`, process.argv[1] contains `_npx` in its path,
+ * meaning `agent-workflow` is not in $PATH.
+ * AFW_INVOKE_PREFIX env var overrides for testing.
+ */
+function invokePrefix() {
+  if (process.env.AFW_INVOKE_PREFIX) return process.env.AFW_INVOKE_PREFIX;
+  if (process.argv[1] && process.argv[1].includes('_npx')) {
+    return 'npx github:three-fourteen/ai-agent-workflow-demo';
+  }
+  return 'agent-workflow';
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -196,7 +210,7 @@ function cmdInit(project, description) {
   console.log(`  ${tasksDir}/`);
   console.log();
   console.log('Next: add tasks with:');
-  console.log(`  agent-workflow task add ${project} "<task title>"`);
+  console.log(`  ${invokePrefix()} task add ${project} "<task title>"`);
 }
 
 function cmdTaskAdd(project, title, description, after) {
