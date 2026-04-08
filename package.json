@@ -10,6 +10,9 @@
   "engines": {
     "node": ">=18"
   },
+  "scripts": {
+    "test": "node --test cli/agent_workflow.test.js"
+  },
   "files": [
     "cli/agent_workflow.js"
   ]
