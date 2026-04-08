@@ -108,13 +108,15 @@ Codex → finishes
 
 # Installation
 
-### Option A — npx (no install needed)
+### Option A — npx (one-shot, no install)
+
+Use npx to scaffold a project without installing anything permanently:
 
 ```bash
 npx github:three-fourteen/ai-agent-workflow-demo init my-project
 ```
 
-> Requires Node.js 18+. npx fetches and runs the CLI in one step — nothing is installed permanently.
+> Requires Node.js 18+. npx runs `init` only — for `task add`, `status`, and `start` use Option B (global install) or prefix each command with `npx github:three-fourteen/ai-agent-workflow-demo`.
 
 ### Option B — global install with npm
 

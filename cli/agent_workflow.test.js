@@ -99,6 +99,13 @@ test('init fails with missing project argument', () => {
   assert.equal(r.status, 1);
 });
 
+test('init shows npx hint when AFW_INVOKE_PREFIX is set', () => withTmp(dir => {
+  const env = { ...process.env, AFW_INVOKE_PREFIX: 'npx github:three-fourteen/ai-agent-workflow-demo' };
+  const r = spawnSync(process.execPath, [CLI, 'init', 'proj'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /npx github:three-fourteen\/ai-agent-workflow-demo task add/);
+}));
+
 // ---------------------------------------------------------------------------
 // task add
 // ---------------------------------------------------------------------------
