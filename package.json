@@ -1,0 +1,16 @@
+{
+  "name": "agent-workflow",
+  "version": "0.1.0",
+  "description": "CLI for the git-native AI agent workflow",
+  "license": "MIT",
+  "bin": {
+    "agent-workflow": "./cli/agent_workflow.js",
+    "afw": "./cli/agent_workflow.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "cli/agent_workflow.js"
+  ]
+}

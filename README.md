@@ -106,15 +106,41 @@ Codex → finishes
 
 ---
 
+# Installation
+
+### Option A — npx (no install needed)
+
+```bash
+npx github:three-fourteen/ai-agent-workflow-demo init my-project
+```
+
+> Requires Node.js 18+. npx fetches and runs the CLI in one step — nothing is installed permanently.
+
+### Option B — global install with npm
+
+```bash
+npm install -g github:three-fourteen/ai-agent-workflow-demo
+agent-workflow --help
+afw --help
+```
+
+### Uninstall
+
+```bash
+npm uninstall -g agent-workflow
+```
+
+---
+
 # CLI
 
-A zero-dependency Python CLI for scaffolding and managing projects.
+A zero-dependency Node.js CLI for scaffolding and managing projects.
 
 ```
-python cli/agent_workflow.py init <project> [--description "..."]
-python cli/agent_workflow.py task add <project> <title> [--description "..."] [--after T-001]
-python cli/agent_workflow.py status [project]
-python cli/agent_workflow.py start <project>
+agent-workflow init <project> [--description "..."]
+agent-workflow task add <project> <title> [--description "..."] [--after T-001]
+agent-workflow status [project]
+agent-workflow start <project>
 ```
 
 ### init
@@ -122,7 +148,7 @@ python cli/agent_workflow.py start <project>
 Scaffolds a new project with the full `.ai/` structure and an empty `tasks/` directory.
 
 ```
-python cli/agent_workflow.py init my-app --description "A SaaS for team time tracking"
+agent-workflow init my-app --description "A SaaS for team time tracking"
 ```
 
 ### task add
@@ -130,8 +156,8 @@ python cli/agent_workflow.py init my-app --description "A SaaS for team time tra
 Creates the next numbered task file (`T-001-...`, `T-002-...`, etc.) and sets it as `current_task` if none is active.
 
 ```
-python cli/agent_workflow.py task add my-app "Setup project"
-python cli/agent_workflow.py task add my-app "Build dashboard" --after T-001
+agent-workflow task add my-app "Setup project"
+agent-workflow task add my-app "Build dashboard" --after T-001
 ```
 
 ### status
@@ -150,7 +176,7 @@ social-feed    prototype  T-001-setup-project          0/4    no
 Prints a ready-to-paste prompt to kick off any AI agent on a project.
 
 ```
-python cli/agent_workflow.py start my-app
+agent-workflow start my-app
 ```
 
 ```
@@ -166,9 +192,9 @@ Completed: 0/2 tasks.
 **Option A — use the CLI to create a new project:**
 
 ```
-python cli/agent_workflow.py init my-project --description "describe your project"
-python cli/agent_workflow.py task add my-project "Setup project"
-python cli/agent_workflow.py start my-project
+agent-workflow init my-project --description "describe your project"
+agent-workflow task add my-project "Setup project"
+agent-workflow start my-project
 ```
 
 Paste the output of `start` into your AI coding agent and it will take it from there.
@@ -204,8 +230,10 @@ ai-agent-workflow-demo
 ├─ README.md
 ├─ LICENSE
 │
+├─ package.json
+│
 ├─ cli/
-│   └─ agent_workflow.py
+│   └─ agent_workflow.js
 │
 ├─ docs/
 │   └─ workflow-diagram.png
