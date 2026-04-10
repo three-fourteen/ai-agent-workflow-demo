@@ -352,7 +352,7 @@ function parseFlags(argv) {
 const USAGE = `\
 Usage:
   agent-workflow init <project> [--description|-d "..."]
-  agent-workflow task add <project> <title> [--description|-d "..."] [--after T-001]
+  agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
   agent-workflow status [project]
   agent-workflow start <project>
 `;
@@ -382,11 +382,18 @@ function main() {
       process.exit(1);
     }
     const { flags, positional } = parseFlags(rest.slice(1));
-    if (!positional[0] || !positional[1]) {
-      process.stderr.write('Error: task add requires <project> and <title>.\n' + USAGE);
+    let taskProject, taskTitle;
+    if (positional[1]) {
+      taskProject = positional[0];
+      taskTitle   = positional[1];
+    } else if (positional[0] && fs.existsSync(path.join('.', '.ai', 'PROJECT_STATE.json'))) {
+      taskProject = '.';
+      taskTitle   = positional[0];
+    } else {
+      process.stderr.write('Error: task add requires <title> (run from project dir) or <project> <title>.\n' + USAGE);
       process.exit(1);
     }
-    cmdTaskAdd(positional[0], positional[1], flags.description || '', flags.after || '');
+    cmdTaskAdd(taskProject, taskTitle, flags.description || '', flags.after || '');
 
   } else if (command === 'status') {
     const { positional } = parseFlags(rest);
