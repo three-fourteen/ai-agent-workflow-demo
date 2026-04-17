@@ -94,10 +94,14 @@ test('init fails if project directory already exists', () => withTmp(dir => {
   assert.match(r.stderr, /already exists/);
 }));
 
-test('init fails with missing project argument', () => {
-  const r = run(['init'], process.cwd());
-  assert.equal(r.status, 1);
-});
+test('init without project arg initializes in current directory', () => withTmp(dir => {
+  const r = run(['init'], dir);
+  assert.equal(r.status, 0);
+  assert.ok(existsSync(join(dir, '.ai', 'PROJECT_STATE.json')));
+  assert.ok(existsSync(join(dir, 'tasks')));
+  const state = JSON.parse(readFileSync(join(dir, '.ai', 'PROJECT_STATE.json'), 'utf8'));
+  assert.equal(state.project, require('path').basename(dir));
+}));
 
 test('init shows npx hint when AFW_INVOKE_PREFIX is set', () => withTmp(dir => {
   const env = { ...process.env, AFW_INVOKE_PREFIX: 'npx github:three-fourteen/ai-agent-workflow-demo' };

@@ -180,7 +180,9 @@ function invokePrefix() {
 // ---------------------------------------------------------------------------
 
 function cmdInit(project, description) {
-  if (fs.existsSync(project)) {
+  const inPlace = project === '.';
+
+  if (!inPlace && fs.existsSync(project)) {
     process.stderr.write(`Error: '${project}' already exists.\n`);
     process.exit(1);
   }
@@ -195,8 +197,9 @@ function cmdInit(project, description) {
   fs.writeFileSync(path.join(aiDir, 'TASK_TEMPLATE.md'),    TASK_TEMPLATE,    'utf8');
   fs.writeFileSync(path.join(aiDir, 'TASK_INDEX.json'),     TASK_INDEX + '\n','utf8');
 
+  const projectName = inPlace ? path.basename(process.cwd()) : project;
   const state = {
-    project,
+    project: projectName,
     phase: 'prototype',
     current_task: null,
     blocked: false,
@@ -205,7 +208,7 @@ function cmdInit(project, description) {
   if (description) state.description = description;
   writeState(project, state);
 
-  console.log(`Initialized project '${project}'`);
+  console.log(`Initialized project '${projectName}'`);
   console.log(`  ${aiDir}/`);
   console.log(`  ${tasksDir}/`);
   console.log();
@@ -370,11 +373,7 @@ function main() {
 
   if (command === 'init') {
     const { flags, positional } = parseFlags(rest);
-    if (!positional[0]) {
-      process.stderr.write('Error: missing <project> argument.\n' + USAGE);
-      process.exit(1);
-    }
-    cmdInit(positional[0], flags.description || '');
+    cmdInit(positional[0] || '.', flags.description || '');
 
   } else if (command === 'task') {
     if (rest[0] !== 'add') {
