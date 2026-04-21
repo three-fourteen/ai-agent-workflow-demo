@@ -94,10 +94,14 @@ test('init fails if project directory already exists', () => withTmp(dir => {
   assert.match(r.stderr, /already exists/);
 }));
 
-test('init fails with missing project argument', () => {
-  const r = run(['init'], process.cwd());
-  assert.equal(r.status, 1);
-});
+test('init without project arg initializes in current directory', () => withTmp(dir => {
+  const r = run(['init'], dir);
+  assert.equal(r.status, 0);
+  assert.ok(existsSync(join(dir, '.ai', 'PROJECT_STATE.json')));
+  assert.ok(existsSync(join(dir, 'tasks')));
+  const state = JSON.parse(readFileSync(join(dir, '.ai', 'PROJECT_STATE.json'), 'utf8'));
+  assert.equal(state.project, require('path').basename(dir));
+}));
 
 test('init shows npx hint when AFW_INVOKE_PREFIX is set', () => withTmp(dir => {
   const env = { ...process.env, AFW_INVOKE_PREFIX: 'npx github:three-fourteen/ai-agent-workflow-demo' };
@@ -164,6 +168,18 @@ test('task add fails for unknown project', () => withTmp(dir => {
   assert.match(r.stderr, /not found/);
 }));
 
+test('task add without project arg works inside project dir', () => withTmp(dir => {
+  run(['init'], dir);
+  const r = run(['task', 'add', 'Setup project'], dir);
+  assert.equal(r.status, 0);
+  assert.ok(existsSync(join(dir, 'tasks', 'T-001-setup-project.md')));
+}));
+
+test('task add without project arg fails outside project dir', () => withTmp(dir => {
+  const r = run(['task', 'add', 'A task'], dir);
+  assert.equal(r.status, 1);
+}));
+
 // ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
@@ -196,6 +212,16 @@ test('status with no projects prints helpful message', () => withTmp(dir => {
   assert.match(r.stdout, /No projects found/);
 }));
 
+test('status inside project dir shows current project', () => withTmp(dir => {
+  run(['init'], dir);
+  run(['task', 'add', 'First task'], dir);
+  const r = run(['status'], dir);
+  assert.equal(r.status, 0);
+  const name = require('path').basename(dir);
+  assert.match(r.stdout, new RegExp(name));
+  assert.match(r.stdout, /T-001/);
+}));
+
 // ---------------------------------------------------------------------------
 // start
 // ---------------------------------------------------------------------------
@@ -218,4 +244,20 @@ test('start fails for unknown project', () => withTmp(dir => {
   const r = run(['start', 'no-such'], dir);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /not found/);
+}));
+
+test('start without args works inside project dir', () => withTmp(dir => {
+  run(['init'], dir);
+  run(['task', 'add', 'Do thing'], dir);
+  const r = run(['start'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /AGENT_START_HERE\.md/);
+  assert.match(r.stdout, /phase=prototype/);
+  assert.match(r.stdout, /current_task=T-001/);
+}));
+
+test('start without args fails outside project dir', () => withTmp(dir => {
+  const r = run(['start'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not inside a project/);
 }));

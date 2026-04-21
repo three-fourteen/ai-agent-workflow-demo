@@ -179,8 +179,14 @@ function invokePrefix() {
 // Commands
 // ---------------------------------------------------------------------------
 
+function isProjectDir(dir) {
+  return fs.existsSync(path.join(dir, '.ai', 'PROJECT_STATE.json'));
+}
+
 function cmdInit(project, description) {
-  if (fs.existsSync(project)) {
+  const inPlace = project === '.';
+
+  if (!inPlace && fs.existsSync(project)) {
     process.stderr.write(`Error: '${project}' already exists.\n`);
     process.exit(1);
   }
@@ -195,8 +201,9 @@ function cmdInit(project, description) {
   fs.writeFileSync(path.join(aiDir, 'TASK_TEMPLATE.md'),    TASK_TEMPLATE,    'utf8');
   fs.writeFileSync(path.join(aiDir, 'TASK_INDEX.json'),     TASK_INDEX + '\n','utf8');
 
+  const projectName = inPlace ? path.basename(process.cwd()) : project;
   const state = {
-    project,
+    project: projectName,
     phase: 'prototype',
     current_task: null,
     blocked: false,
@@ -205,16 +212,17 @@ function cmdInit(project, description) {
   if (description) state.description = description;
   writeState(project, state);
 
-  console.log(`Initialized project '${project}'`);
+  console.log(`Initialized project '${projectName}'`);
   console.log(`  ${aiDir}/`);
   console.log(`  ${tasksDir}/`);
   console.log();
   console.log('Next: add tasks with:');
-  console.log(`  ${invokePrefix()} task add ${project} "<task title>"`);
+  const taskHint = inPlace ? `"<task title>"` : `${project} "<task title>"`;
+  console.log(`  ${invokePrefix()} task add ${taskHint}`);
 }
 
 function cmdTaskAdd(project, title, description, after) {
-  if (!fs.existsSync(project) || !fs.statSync(project).isDirectory()) {
+  if (!isProjectDir(project)) {
     process.stderr.write(`Error: project '${project}' not found.\n`);
     process.exit(1);
   }
@@ -263,11 +271,15 @@ None
 }
 
 function cmdStatus(filterProject) {
-  const entries = fs.readdirSync('.', { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .filter(d => fs.existsSync(path.join(d.name, '.ai', 'PROJECT_STATE.json')))
-    .map(d => d.name)
-    .sort();
+  const inPlace = !filterProject && isProjectDir('.');
+
+  const entries = inPlace
+    ? ['.']
+    : fs.readdirSync('.', { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .filter(d => isProjectDir(d.name))
+        .map(d => d.name)
+        .sort();
 
   if (entries.length === 0) {
     console.log('No projects found in current directory.');
@@ -284,20 +296,21 @@ function cmdStatus(filterProject) {
   console.log(header);
   console.log('-'.repeat(header.length));
 
-  for (const projectName of entries) {
-    if (filterProject && projectName !== filterProject) continue;
+  for (const projectPath of entries) {
+    if (filterProject && projectPath !== filterProject) continue;
 
     let state;
     try {
-      state = JSON.parse(fs.readFileSync(path.join(projectName, '.ai', 'PROJECT_STATE.json'), 'utf8'));
+      state = JSON.parse(fs.readFileSync(path.join(projectPath, '.ai', 'PROJECT_STATE.json'), 'utf8'));
     } catch {
       continue;
     }
 
+    const projectName = projectPath === '.' ? state.project : projectPath;
     const phase     = (state.phase || '?');
     const current   = state.current_task || '-';
     const completed = (state.completed_tasks || []).length;
-    const total     = countTasks(projectName);
+    const total     = countTasks(projectPath);
     const blocked   = state.blocked ? 'yes' : 'no';
     const done      = `${completed}/${total}`;
 
@@ -312,8 +325,11 @@ function cmdStatus(filterProject) {
 }
 
 function cmdStart(project) {
-  if (!fs.existsSync(project) || !fs.statSync(project).isDirectory()) {
-    process.stderr.write(`Error: project '${project}' not found.\n`);
+  if (!isProjectDir(project)) {
+    const msg = project === '.'
+      ? 'Error: not inside a project directory.\n'
+      : `Error: project '${project}' not found.\n`;
+    process.stderr.write(msg);
     process.exit(1);
   }
 
@@ -324,7 +340,11 @@ function cmdStart(project) {
   const completed = (state.completed_tasks || []).length;
   const total     = countTasks(project);
 
-  console.log(`Navigate to ${project}/ and follow .ai/AGENT_START_HERE.md to begin working.`);
+  if (project === '.') {
+    console.log(`Follow .ai/AGENT_START_HERE.md to begin working.`);
+  } else {
+    console.log(`Navigate to ${project}/ and follow .ai/AGENT_START_HERE.md to begin working.`);
+  }
   console.log(`Current state: phase=${phase}, current_task=${current}, blocked=${blocked}.`);
   console.log(`Completed: ${completed}/${total} tasks.`);
 }
@@ -351,10 +371,10 @@ function parseFlags(argv) {
 
 const USAGE = `\
 Usage:
-  agent-workflow init <project> [--description|-d "..."]
+  agent-workflow init [<project>] [--description|-d "..."]
   agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
-  agent-workflow status [project]
-  agent-workflow start <project>
+  agent-workflow status [<project>]
+  agent-workflow start [<project>]
 `;
 
 function main() {
@@ -370,11 +390,7 @@ function main() {
 
   if (command === 'init') {
     const { flags, positional } = parseFlags(rest);
-    if (!positional[0]) {
-      process.stderr.write('Error: missing <project> argument.\n' + USAGE);
-      process.exit(1);
-    }
-    cmdInit(positional[0], flags.description || '');
+    cmdInit(positional[0] || '.', flags.description || '');
 
   } else if (command === 'task') {
     if (rest[0] !== 'add') {
@@ -386,7 +402,7 @@ function main() {
     if (positional[1]) {
       taskProject = positional[0];
       taskTitle   = positional[1];
-    } else if (positional[0] && fs.existsSync(path.join('.', '.ai', 'PROJECT_STATE.json'))) {
+    } else if (positional[0] && isProjectDir('.')) {
       taskProject = '.';
       taskTitle   = positional[0];
     } else {
@@ -401,11 +417,7 @@ function main() {
 
   } else if (command === 'start') {
     const { positional } = parseFlags(rest);
-    if (!positional[0]) {
-      process.stderr.write('Error: missing <project> argument.\n' + USAGE);
-      process.exit(1);
-    }
-    cmdStart(positional[0]);
+    cmdStart(positional[0] || '.');
 
   } else {
     process.stderr.write(`Error: unknown command '${command}'.\n` + USAGE);
