@@ -139,32 +139,40 @@ npm uninstall -g agent-workflow
 A zero-dependency Node.js CLI for scaffolding and managing projects.
 
 ```
-agent-workflow init <project> [--description "..."]
-agent-workflow task add <project> <title> [--description "..."] [--after T-001]
-agent-workflow status [project]
-agent-workflow start <project>
+agent-workflow init [<project>] [--description "..."]
+agent-workflow task add [<project>] <title> [--description "..."] [--after T-001]
+agent-workflow status [<project>]
+agent-workflow start [<project>]
 ```
 
 ### init
 
 Scaffolds a new project with the full `.ai/` structure and an empty `tasks/` directory.
 
+Pass a name to create a new subdirectory, or omit it to initialise inside the current folder.
+
 ```
 agent-workflow init my-app --description "A SaaS for team time tracking"
+agent-workflow init --description "Working in the current directory"
 ```
 
 ### task add
 
 Creates the next numbered task file (`T-001-...`, `T-002-...`, etc.) and sets it as `current_task` if none is active.
 
+Pass a project name explicitly, or omit it when running from inside a project directory.
+
 ```
 agent-workflow task add my-app "Setup project"
 agent-workflow task add my-app "Build dashboard" --after T-001
+
+# from inside the project directory:
+agent-workflow task add "Setup project"
 ```
 
 ### status
 
-Prints an overview of all projects in the current directory.
+Prints an overview of projects. When run from inside a project directory it shows that project; otherwise it scans subdirectories.
 
 ```
 Project        Phase      Current Task                 Done   Blocked
@@ -177,8 +185,11 @@ social-feed    prototype  T-001-setup-project          0/4    no
 
 Prints a ready-to-paste prompt to kick off any AI agent on a project.
 
+Pass a project name explicitly, or omit it when running from inside a project directory.
+
 ```
 agent-workflow start my-app
+agent-workflow start          # from inside the project directory
 ```
 
 ```
@@ -193,10 +204,21 @@ Completed: 0/2 tasks.
 
 **Option A — use the CLI to create a new project:**
 
+From a parent directory (creates a `my-project/` subfolder):
+
 ```
 agent-workflow init my-project --description "describe your project"
 agent-workflow task add my-project "Setup project"
 agent-workflow start my-project
+```
+
+Or from inside an existing directory (no subfolder created):
+
+```
+cd my-project
+agent-workflow init --description "describe your project"
+agent-workflow task add "Setup project"
+agent-workflow start
 ```
 
 Paste the output of `start` into your AI coding agent and it will take it from there.
