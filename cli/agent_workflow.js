@@ -217,7 +217,8 @@ function cmdInit(project, description) {
   console.log(`  ${tasksDir}/`);
   console.log();
   console.log('Next: add tasks with:');
-  console.log(`  ${invokePrefix()} task add ${project} "<task title>"`);
+  const taskHint = inPlace ? `"<task title>"` : `${project} "<task title>"`;
+  console.log(`  ${invokePrefix()} task add ${taskHint}`);
 }
 
 function cmdTaskAdd(project, title, description, after) {
