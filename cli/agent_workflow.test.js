@@ -39,6 +39,7 @@ test('--help exits 0 and shows usage', () => {
   assert.match(r.stdout, /agent-workflow init/);
   assert.match(r.stdout, /task add/);
   assert.match(r.stdout, /status/);
+  assert.match(r.stdout, /plan/);
   assert.match(r.stdout, /start/);
 });
 
@@ -63,6 +64,7 @@ test('init creates full project structure', () => withTmp(dir => {
   assert.match(r.stdout, /Initialized project 'my-proj'/);
 
   const aiDir = join(dir, 'my-proj', '.ai');
+  assert.ok(existsSync(join(aiDir, 'AGENT_PLAN_HERE.md')));
   assert.ok(existsSync(join(aiDir, 'AGENT_START_HERE.md')));
   assert.ok(existsSync(join(aiDir, 'WORKING_RULES.md')));
   assert.ok(existsSync(join(aiDir, 'TASK_TEMPLATE.md')));
@@ -234,10 +236,21 @@ test('start prints agent prompt with current state', () => withTmp(dir => {
   const r = run(['start', 'proj'], dir);
   assert.equal(r.status, 0);
   assert.match(r.stdout, /AGENT_START_HERE\.md/);
+  assert.match(r.stdout, /single-task/);
   assert.match(r.stdout, /phase=prototype/);
   assert.match(r.stdout, /current_task=T-001/);
   assert.match(r.stdout, /blocked=false/);
   assert.match(r.stdout, /Completed: 0\/2/);
+}));
+
+test('start --all prints all-tasks mode', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+
+  const r = run(['start', 'proj', '--all'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /AGENT_START_HERE\.md/);
+  assert.match(r.stdout, /all-tasks/);
 }));
 
 test('start fails for unknown project', () => withTmp(dir => {
@@ -258,6 +271,51 @@ test('start without args works inside project dir', () => withTmp(dir => {
 
 test('start without args fails outside project dir', () => withTmp(dir => {
   const r = run(['start'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not inside a project/);
+}));
+
+// ---------------------------------------------------------------------------
+// plan
+// ---------------------------------------------------------------------------
+
+test('plan prints plan prompt with current state', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+
+  const r = run(['plan', 'proj'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /AGENT_PLAN_HERE\.md/);
+  assert.match(r.stdout, /plan-only/);
+  assert.match(r.stdout, /phase=prototype/);
+  assert.match(r.stdout, /current_task=none/);
+  assert.match(r.stdout, /blocked=false/);
+  assert.match(r.stdout, /Completed: 0\/0/);
+}));
+
+test('plan --execute prints plan-and-execute mode', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+
+  const r = run(['plan', 'proj', '--execute'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /AGENT_PLAN_HERE\.md/);
+  assert.match(r.stdout, /plan-and-execute/);
+}));
+
+test('plan fails for unknown project', () => withTmp(dir => {
+  const r = run(['plan', 'no-such'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not found/);
+}));
+
+test('plan without args works inside project dir', () => withTmp(dir => {
+  run(['init'], dir);
+  const r = run(['plan'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /AGENT_PLAN_HERE\.md/);
+}));
+
+test('plan without args fails outside project dir', () => withTmp(dir => {
+  const r = run(['plan'], dir);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /not inside a project/);
 }));
