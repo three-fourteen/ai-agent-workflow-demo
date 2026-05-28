@@ -17,7 +17,7 @@ cd ai-agent-workflow-demo
 npm test
 ```
 
-23 tests covering all four CLI commands (`init`, `task add`, `status`, `start`),
+29 tests covering all five CLI commands (`init`, `task add`, `status`, `plan`, `start`),
 error paths, and slug generation. Tests use Node's built-in `node:test` runner —
 no extra packages needed.
 

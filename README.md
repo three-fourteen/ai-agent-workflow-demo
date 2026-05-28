@@ -142,7 +142,8 @@ A zero-dependency Node.js CLI for scaffolding and managing projects.
 agent-workflow init [<project>] [--description "..."]
 agent-workflow task add [<project>] <title> [--description "..."] [--after T-001]
 agent-workflow status [<project>]
-agent-workflow start [<project>]
+agent-workflow plan [<project>] [--execute]
+agent-workflow start [<project>] [--all]
 ```
 
 ### init
@@ -181,19 +182,33 @@ my-app         prototype  T-001-setup-project          0/2    no
 social-feed    prototype  T-001-setup-project          0/4    no
 ```
 
+### plan
+
+Prints a ready-to-paste prompt that puts the agent into planning mode — it will ask clarifying questions and create tasks before writing any code.
+
+`--execute` tells the agent to proceed straight to execution after the plan is accepted.
+
+```
+agent-workflow plan my-app
+agent-workflow plan my-app --execute
+agent-workflow plan          # from inside the project directory
+```
+
 ### start
 
-Prints a ready-to-paste prompt to kick off any AI agent on a project.
+Prints a ready-to-paste prompt that puts the agent into execution mode on the current task.
 
-Pass a project name explicitly, or omit it when running from inside a project directory.
+`--all` tells the agent to keep executing tasks until none remain (instead of stopping after one).
 
 ```
 agent-workflow start my-app
+agent-workflow start my-app --all
 agent-workflow start          # from inside the project directory
 ```
 
 ```
 Navigate to my-app/ and follow .ai/AGENT_START_HERE.md to begin working.
+Mode: single-task — after completing and summarizing one task, ask the user whether to continue with the next task and stop.
 Current state: phase=prototype, current_task=T-001-setup-project, blocked=false.
 Completed: 0/2 tasks.
 ```
