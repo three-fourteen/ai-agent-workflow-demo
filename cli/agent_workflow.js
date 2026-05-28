@@ -6,7 +6,8 @@
  *   agent-workflow init <project> [--description|-d "..."]
  *   agent-workflow task add <project> <title> [--description|-d "..."] [--after T-001]
  *   agent-workflow status [project]
- *   agent-workflow start <project>
+ *   agent-workflow plan [<project>] [--execute]
+ *   agent-workflow start [<project>] [--all]
  */
 
 'use strict';
@@ -18,10 +19,28 @@ const path = require('node:path');
 // Embedded templates (mirrors .ai/ files in existing demo projects)
 // ---------------------------------------------------------------------------
 
+const AGENT_PLAN_HERE = `\
+This repository uses an AI-native development workflow.
+
+You are in PLANNING mode. Do not implement anything yet.
+
+1. Read PROJECT_STATE.json and .ai/WORKING_RULES.md
+2. Ask the user any clarifying questions needed before creating tasks (scope, requirements, constraints, priorities)
+3. Wait for answers before proceeding
+4. Create task files in /tasks following .ai/TASK_TEMPLATE.md and WORKING_RULES.md
+5. Update PROJECT_STATE.json with the first task as current_task
+6. Present the task plan to the user
+
+Follow the mode instruction from the command output above.
+
+Do not explore the repository unnecessarily.
+Do not start implementing.
+`;
+
 const AGENT_START_HERE = `\
 This repository uses an AI-native development workflow.
 
-When working on this project:
+You are in EXECUTION mode.
 
 1. Read PROJECT_STATE.json
 2. If current_task exists and is valid, open it
@@ -29,9 +48,13 @@ When working on this project:
    - scan /tasks
    - resolve dependencies
    - pick next task
-4. Execute subtasks
-5. Update state
-6. If no tasks remain, generate completion artifacts as defined in WORKING_RULES.md.
+4. Execute the task's subtasks
+5. When the task is complete:
+   - Set Status to completed
+   - Add task to completed_tasks in PROJECT_STATE.json
+   - Update current_task to the next pending task (or null if none remain)
+6. Summarize what you implemented for the completed task
+7. Follow the mode instruction from the command output above
 
 Do not explore the repository unnecessarily.
 Focus on the current task only.
@@ -196,6 +219,7 @@ function cmdInit(project, description) {
   fs.mkdirSync(aiDir,    { recursive: true });
   fs.mkdirSync(tasksDir, { recursive: true });
 
+  fs.writeFileSync(path.join(aiDir, 'AGENT_PLAN_HERE.md'),  AGENT_PLAN_HERE,  'utf8');
   fs.writeFileSync(path.join(aiDir, 'AGENT_START_HERE.md'), AGENT_START_HERE, 'utf8');
   fs.writeFileSync(path.join(aiDir, 'WORKING_RULES.md'),    WORKING_RULES,    'utf8');
   fs.writeFileSync(path.join(aiDir, 'TASK_TEMPLATE.md'),    TASK_TEMPLATE,    'utf8');
@@ -324,7 +348,7 @@ function cmdStatus(filterProject) {
   }
 }
 
-function cmdStart(project) {
+function cmdPlan(project, execute) {
   if (!isProjectDir(project)) {
     const msg = project === '.'
       ? 'Error: not inside a project directory.\n'
@@ -340,10 +364,40 @@ function cmdStart(project) {
   const completed = (state.completed_tasks || []).length;
   const total     = countTasks(project);
 
-  if (project === '.') {
-    console.log(`Follow .ai/AGENT_START_HERE.md to begin working.`);
+  const prefix = project === '.' ? '' : `Navigate to ${project}/ and `;
+  if (execute) {
+    console.log(`${prefix}Follow .ai/AGENT_PLAN_HERE.md to begin planning, then execute all tasks.`);
+    console.log(`Mode: plan-and-execute — after presenting the task plan, immediately proceed to execute all tasks until none remain.`);
   } else {
-    console.log(`Navigate to ${project}/ and follow .ai/AGENT_START_HERE.md to begin working.`);
+    console.log(`${prefix}Follow .ai/AGENT_PLAN_HERE.md to begin planning.`);
+    console.log(`Mode: plan-only — after presenting the task plan, stop and wait for the user to run \`${invokePrefix()} start\`.`);
+  }
+  console.log(`Current state: phase=${phase}, current_task=${current}, blocked=${blocked}.`);
+  console.log(`Completed: ${completed}/${total} tasks.`);
+}
+
+function cmdStart(project, all) {
+  if (!isProjectDir(project)) {
+    const msg = project === '.'
+      ? 'Error: not inside a project directory.\n'
+      : `Error: project '${project}' not found.\n`;
+    process.stderr.write(msg);
+    process.exit(1);
+  }
+
+  const state     = readState(project);
+  const phase     = state.phase || 'prototype';
+  const current   = state.current_task || 'none';
+  const blocked   = state.blocked ? 'true' : 'false';
+  const completed = (state.completed_tasks || []).length;
+  const total     = countTasks(project);
+
+  const prefix = project === '.' ? '' : `Navigate to ${project}/ and `;
+  console.log(`${prefix}Follow .ai/AGENT_START_HERE.md to begin working.`);
+  if (all) {
+    console.log(`Mode: all-tasks — execute all tasks until none remain, then generate completion artifacts as defined in .ai/WORKING_RULES.md.`);
+  } else {
+    console.log(`Mode: single-task — after completing and summarizing one task, ask the user whether to continue with the next task and stop.`);
   }
   console.log(`Current state: phase=${phase}, current_task=${current}, blocked=${blocked}.`);
   console.log(`Completed: ${completed}/${total} tasks.`);
@@ -362,6 +416,10 @@ function parseFlags(argv) {
       flags.description = argv[++i];
     } else if (arg === '--after') {
       flags.after = argv[++i];
+    } else if (arg === '--execute' || arg === '-e') {
+      flags.execute = true;
+    } else if (arg === '--all' || arg === '-a') {
+      flags.all = true;
     } else {
       positional.push(arg);
     }
@@ -374,7 +432,8 @@ Usage:
   agent-workflow init [<project>] [--description|-d "..."]
   agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
   agent-workflow status [<project>]
-  agent-workflow start [<project>]
+  agent-workflow plan [<project>] [--execute]
+  agent-workflow start [<project>] [--all]
 `;
 
 function main() {
@@ -415,9 +474,13 @@ function main() {
     const { positional } = parseFlags(rest);
     cmdStatus(positional[0] || '');
 
+  } else if (command === 'plan') {
+    const { flags, positional } = parseFlags(rest);
+    cmdPlan(positional[0] || '.', flags.execute || false);
+
   } else if (command === 'start') {
-    const { positional } = parseFlags(rest);
-    cmdStart(positional[0] || '.');
+    const { flags, positional } = parseFlags(rest);
+    cmdStart(positional[0] || '.', flags.all || false);
 
   } else {
     process.stderr.write(`Error: unknown command '${command}'.\n` + USAGE);
