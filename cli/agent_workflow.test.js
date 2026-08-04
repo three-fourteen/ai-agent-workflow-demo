@@ -8,7 +8,7 @@
 const { test }        = require('node:test');
 const assert          = require('node:assert/strict');
 const { spawnSync }   = require('node:child_process');
-const { mkdtempSync, rmSync, existsSync, readFileSync } = require('node:fs');
+const { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { join }        = require('node:path');
 const { tmpdir }      = require('node:os');
 
@@ -180,6 +180,119 @@ test('task add without project arg works inside project dir', () => withTmp(dir 
 test('task add without project arg fails outside project dir', () => withTmp(dir => {
   const r = run(['task', 'add', 'A task'], dir);
   assert.equal(r.status, 1);
+}));
+
+// ---------------------------------------------------------------------------
+// task transitions (start / complete / block / unblock)
+// ---------------------------------------------------------------------------
+
+test('task start then complete drives the state machine', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  run(['task', 'add', 'proj', 'Build', '--after', 'T-001'], dir);
+
+  const start = run(['task', 'start', 'proj', 'T-001'], dir);
+  assert.equal(start.status, 0);
+  assert.match(start.stdout, /T-001 → in-progress/);
+
+  const done = run(['task', 'complete', 'proj', 'T-001', '--no-verify'], dir);
+  assert.equal(done.status, 0);
+  assert.match(done.stdout, /T-001 → completed/);
+  assert.match(done.stdout, /Next task: T-002/);
+
+  const state = JSON.parse(readFileSync(join(dir, 'proj', '.ai', 'PROJECT_STATE.json'), 'utf8'));
+  assert.deepEqual(state.completed_tasks, ['T-001']);
+  assert.equal(state.current_task, 'T-002');
+}));
+
+test('task complete from pending is rejected as illegal transition', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const r = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /illegal transition/);
+}));
+
+test('task block records reason and sets project blocked', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const r = run(['task', 'block', 'proj', 'T-001', '--reason', 'need keys'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /T-001 → blocked/);
+  const state = JSON.parse(readFileSync(join(dir, 'proj', '.ai', 'PROJECT_STATE.json'), 'utf8'));
+  assert.equal(state.blocked, true);
+  assert.equal(state.block_reason, 'need keys');
+}));
+
+test('task complete is gated on a failing Verify command', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  // set a failing Verify command
+  const f = join(dir, 'proj', 'tasks', 'T-001-setup.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^Verify:.*$/m, 'Verify: exit 1'));
+  run(['task', 'start', 'proj', 'T-001'], dir);
+  const r = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /verification failed/);
+
+  const forced = run(['task', 'complete', 'proj', 'T-001', '--force'], dir);
+  assert.equal(forced.status, 0);
+  assert.match(forced.stdout, /unverified/);
+}));
+
+test('unknown task subcommand exits 1', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  const r = run(['task', 'frob', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /unknown task subcommand/);
+}));
+
+// ---------------------------------------------------------------------------
+// next / claim (scheduling)
+// ---------------------------------------------------------------------------
+
+test('next --all lists every runnable task after a dependency completes', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  run(['task', 'add', 'proj', 'A', '--after', 'T-001'], dir);
+  run(['task', 'add', 'proj', 'B', '--after', 'T-001'], dir);
+  run(['task', 'start', 'proj', 'T-001'], dir);
+  run(['task', 'complete', 'proj', 'T-001', '--no-verify'], dir);
+
+  const r = run(['next', 'proj', '--all', '--json'], dir);
+  assert.equal(r.status, 0);
+  const ids = JSON.parse(r.stdout).map(t => t.id);
+  assert.deepEqual(ids, ['T-002', 'T-003']);
+}));
+
+test('claim then start by another id path is blocked by the lock', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const c1 = run(['claim', 'proj', 'T-001', '--agent', 'alice'], dir);
+  assert.equal(c1.status, 0);
+  const c2 = run(['claim', 'proj', 'T-001', '--agent', 'bob'], dir);
+  assert.equal(c2.status, 1);
+  assert.match(c2.stderr, /already claimed by 'alice'/);
+}));
+
+// ---------------------------------------------------------------------------
+// validate
+// ---------------------------------------------------------------------------
+
+test('validate passes for a fresh project and exits 0', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const r = run(['validate', 'proj'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /valid/);
+}));
+
+test('validate exits 1 and lists problems for a broken graph', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup', '--after', 'T-099'], dir);
+  const r = run(['validate', 'proj'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /missing task 'T-099'/);
 }));
 
 // ---------------------------------------------------------------------------

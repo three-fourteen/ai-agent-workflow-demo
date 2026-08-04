@@ -5,8 +5,7 @@ Goal: user dashboard
 Context:
 Create a minimally styled user dashboard view accessible after a successful fake authentication event.
 
-Dependencies:
-T-003-fake-auth
+Dependencies: T-003
 
 Subtasks:
 
@@ -19,6 +18,8 @@ Authenticated user lands on an initialized dashboard containing standard SaaS na
 
 Verification:
 Verify components load successfully and logout works and redirects to landing page.
+
+Verify: npm run build
 
 Next Step:
 None.

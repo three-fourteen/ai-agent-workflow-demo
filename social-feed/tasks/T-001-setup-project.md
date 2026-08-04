@@ -18,6 +18,8 @@ Project is initialized with a package.json or equivalent and ready for developme
 Verification:
 Run the start command and verify the app compiles or runs without errors.
 
+Verify: test -f package.json
+
 Next Step:
 Proceed to T-002.
 

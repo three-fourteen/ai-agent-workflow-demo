@@ -5,8 +5,7 @@ Goal: signup UI
 Context:
 Implement a signup UI for the SaaS application to capture email and password.
 
-Dependencies:
-T-001-landing-page
+Dependencies: T-001
 
 Subtasks:
 
@@ -19,6 +18,8 @@ User can navigate to the signup page and fill in details without errors.
 
 Verification:
 Test navigating from landing page to signup and ensure form validation works visually.
+
+Verify: npm run build
 
 Next Step:
 Proceed to T-003.

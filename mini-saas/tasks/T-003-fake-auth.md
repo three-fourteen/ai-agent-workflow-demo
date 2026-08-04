@@ -5,8 +5,7 @@ Goal: fake auth
 Context:
 Implement generic basic stateful mock authentication that routes the user appropriately upon signup login to simulate the authentication flow.
 
-Dependencies:
-T-002-signup-ui
+Dependencies: T-002
 
 Subtasks:
 
@@ -15,10 +14,12 @@ Subtasks:
 3. Redirect user upon a successful synthetic login.
 
 Done Criteria:
-Sumbitting the signup UI redirects to a logged-in empty dashboard view.
+Submitting the signup UI redirects to a logged-in empty dashboard view.
 
 Verification:
 Verify completion of signup flow moves user to dashboard.
+
+Verify: npm run build
 
 Next Step:
 Proceed to T-004.

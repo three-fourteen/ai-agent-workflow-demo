@@ -3,25 +3,26 @@ Status: pending
 Goal: mock API
 
 Context:
-Create a mock API to serve data to the dashboard instead of using hardcoded dummy data.
+Create a standalone mock API/service module that returns analytics data as promises. It has no UI dependency, so it is built in parallel with T-002 (layout).
 
-Dependencies:
-T-003-add-charts
+Dependencies: T-001
 
 Subtasks:
 
-1. Create a service file to return mock data promises.
-2. Update dashboard components to fetch data from the mock API.
-3. Handle loading states while fetching data.
+1. Create a service file that returns mock data promises.
+2. Define the data shape the charts will consume.
+3. Add artificial latency to simulate a network request.
 
 Done Criteria:
-Dashboard displays charts using data fetched via the mock API.
+A mock data service module exists and returns sample analytics data.
 
 Verification:
-Confirm that charts show loading states before displaying the fetched data.
+Import the service in a scratch test and confirm it resolves sample data.
+
+Verify: npm run build
 
 Next Step:
-None.
+Runs in parallel with T-002. T-003 (charts) joins both once they are complete.
 
 Blockers:
 None

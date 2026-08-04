@@ -2,10 +2,13 @@
 /**
  * agent_workflow.js — CLI for the git-native AI agent workflow.
  *
+ * Thin wrapper: parses args, calls core.js, formats output, maps
+ * WorkflowError → stderr + exit code.
+ *
  * Usage:
- *   agent-workflow init <project> [--description|-d "..."]
- *   agent-workflow task add <project> <title> [--description|-d "..."] [--after T-001]
- *   agent-workflow status [project]
+ *   agent-workflow init [<project>] [--description|-d "..."]
+ *   agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
+ *   agent-workflow status [<project>]
  *   agent-workflow plan [<project>] [--execute]
  *   agent-workflow start [<project>] [--all]
  */
@@ -13,176 +16,12 @@
 'use strict';
 
 const fs   = require('node:fs');
-const path = require('node:path');
+const core = require('./core');
+const { WorkflowError } = core;
 
 // ---------------------------------------------------------------------------
-// Embedded templates (mirrors .ai/ files in existing demo projects)
+// Presentation helpers
 // ---------------------------------------------------------------------------
-
-const AGENT_PLAN_HERE = `\
-This repository uses an AI-native development workflow.
-
-You are in PLANNING mode. Do not implement anything yet.
-
-1. Read PROJECT_STATE.json and .ai/WORKING_RULES.md
-2. Ask the user any clarifying questions needed before creating tasks (scope, requirements, constraints, priorities)
-3. Wait for answers before proceeding
-4. Create task files in /tasks following .ai/TASK_TEMPLATE.md and WORKING_RULES.md
-5. Update PROJECT_STATE.json with the first task as current_task
-6. Present the task plan to the user
-
-Follow the mode instruction from the command output above.
-
-Do not explore the repository unnecessarily.
-Do not start implementing.
-`;
-
-const AGENT_START_HERE = `\
-This repository uses an AI-native development workflow.
-
-You are in EXECUTION mode.
-
-1. Read PROJECT_STATE.json
-2. If current_task exists and is valid, open it
-3. Else:
-   - scan /tasks
-   - resolve dependencies
-   - pick next task
-4. Execute the task's subtasks
-5. When the task is complete:
-   - Set Status to completed
-   - Add task to completed_tasks in PROJECT_STATE.json
-   - Update current_task to the next pending task (or null if none remain)
-6. Summarize what you implemented for the completed task
-7. Follow the mode instruction from the command output above
-
-Do not explore the repository unnecessarily.
-Focus on the current task only.
-`;
-
-const WORKING_RULES = `\
-Rules for AI agents working in this repository.
-
-- Only one task may be in progress.
-
-## Task Requirements
-
-All tasks must include:
-- Status
-- Goal
-- Context
-- Dependencies
-- Subtasks
-- Done Criteria
-- Verification
-- Next Step
-- Blockers
-
-## Task Selection
-
-- \`current_task\` is optional in hybrid mode.
-- If \`current_task\` exists and matches a task file, use it.
-- If \`current_task\` is null, missing, or invalid, scan \`/tasks\`, ignore tasks with \`Status: completed\` or \`Status: blocked\`, and pick the first task whose dependencies are all listed in \`completed_tasks\`.
-- If no task qualifies, trigger finalization.
-
-## When completing a task
-
-1. Set Status to completed
-2. Add task to completed_tasks in PROJECT_STATE.json
-3. Select next task
-4. Update next_step
-
-## When blocked
-
-1. Set blocked=true in PROJECT_STATE.json
-2. Add:
-   - block_reason
-   - unblock_strategy
-3. Update task file Blockers section
-
-## Finalization step
-
-If:
-- current_task is null or no valid task can be selected
-- no pending tasks exist
-
-Then:
-
-1. Generate:
-   - /docs/completion-summary.md
-   - /docs/user-story.md
-2. Update PROJECT_STATE.json:
-   "phase": "completed"
-`;
-
-const TASK_TEMPLATE = `\
-Status: pending | in-progress | completed | blocked
-
-Goal
-
-Context
-
-Dependencies: none
-
-Subtasks
-
-Done Criteria
-
-Verification
-
-Next Step
-
-Blockers
-`;
-
-const TASK_INDEX = JSON.stringify(
-  {
-    mode: 'placeholder',
-    notes: 'Reserved for future optimization. Hybrid mode scans /tasks when current_task is missing.',
-  },
-  null,
-  2
-);
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function slugify(text) {
-  return text
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function readState(projectDir) {
-  const statePath = path.join(projectDir, '.ai', 'PROJECT_STATE.json');
-  if (!fs.existsSync(statePath)) {
-    process.stderr.write(`Error: ${statePath} not found. Is '${projectDir}' a valid project?\n`);
-    process.exit(1);
-  }
-  return JSON.parse(fs.readFileSync(statePath, 'utf8'));
-}
-
-function writeState(projectDir, state) {
-  const statePath = path.join(projectDir, '.ai', 'PROJECT_STATE.json');
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n', 'utf8');
-}
-
-function countTasks(projectDir) {
-  const tasksDir = path.join(projectDir, 'tasks');
-  try {
-    return fs.readdirSync(tasksDir).filter(f => /^T-.*\.md$/.test(f)).length;
-  } catch {
-    return 0;
-  }
-}
-
-function nextTaskId(projectDir) {
-  return countTasks(projectDir) + 1;
-}
 
 /**
  * Returns the correct command prefix for "next steps" hints.
@@ -202,39 +41,8 @@ function invokePrefix() {
 // Commands
 // ---------------------------------------------------------------------------
 
-function isProjectDir(dir) {
-  return fs.existsSync(path.join(dir, '.ai', 'PROJECT_STATE.json'));
-}
-
 function cmdInit(project, description) {
-  const inPlace = project === '.';
-
-  if (!inPlace && fs.existsSync(project)) {
-    process.stderr.write(`Error: '${project}' already exists.\n`);
-    process.exit(1);
-  }
-
-  const aiDir    = path.join(project, '.ai');
-  const tasksDir = path.join(project, 'tasks');
-  fs.mkdirSync(aiDir,    { recursive: true });
-  fs.mkdirSync(tasksDir, { recursive: true });
-
-  fs.writeFileSync(path.join(aiDir, 'AGENT_PLAN_HERE.md'),  AGENT_PLAN_HERE,  'utf8');
-  fs.writeFileSync(path.join(aiDir, 'AGENT_START_HERE.md'), AGENT_START_HERE, 'utf8');
-  fs.writeFileSync(path.join(aiDir, 'WORKING_RULES.md'),    WORKING_RULES,    'utf8');
-  fs.writeFileSync(path.join(aiDir, 'TASK_TEMPLATE.md'),    TASK_TEMPLATE,    'utf8');
-  fs.writeFileSync(path.join(aiDir, 'TASK_INDEX.json'),     TASK_INDEX + '\n','utf8');
-
-  const projectName = inPlace ? path.basename(process.cwd()) : project;
-  const state = {
-    project: projectName,
-    phase: 'prototype',
-    current_task: null,
-    blocked: false,
-    completed_tasks: [],
-  };
-  if (description) state.description = description;
-  writeState(project, state);
+  const { projectName, aiDir, tasksDir, inPlace } = core.initProject(project, description);
 
   console.log(`Initialized project '${projectName}'`);
   console.log(`  ${aiDir}/`);
@@ -246,62 +54,122 @@ function cmdInit(project, description) {
 }
 
 function cmdTaskAdd(project, title, description, after) {
-  if (!isProjectDir(project)) {
-    process.stderr.write(`Error: project '${project}' not found.\n`);
+  const { taskPath, setCurrent } = core.addTask(project, title, { description, after });
+  console.log(setCurrent
+    ? `Created ${taskPath}  (set as current_task)`
+    : `Created ${taskPath}`);
+}
+
+/**
+ * Resolve `<project> <id>` or (inside a project) `<id>` from positionals.
+ * Returns { project, taskId }.
+ */
+function resolveTaskArgs(positional, verb) {
+  if (positional[1]) return { project: positional[0], taskId: positional[1] };
+  if (positional[0] && core.isProjectDir('.')) return { project: '.', taskId: positional[0] };
+  fail(`task ${verb} requires <id> (run from project dir) or <project> <id>.\n` + USAGE);
+}
+
+function agentName(flags) {
+  return flags.agent || process.env.AFW_AGENT || 'agent';
+}
+
+function cmdTaskStart(project, taskId, agent) {
+  const r = core.startTask(project, taskId, { agent });
+  console.log(`${r.taskId} → in-progress`);
+}
+
+function cmdTaskComplete(project, taskId, { force, noVerify }) {
+  const r = core.completeTask(project, taskId, { force, noVerify, inherit: true });
+  console.log(`${r.taskId} → completed${r.verified ? ' (verified)' : ' (unverified)'}`);
+  console.log(r.nextTask
+    ? `Next task: ${r.nextTask}`
+    : `No runnable task remains — run \`${invokePrefix()} validate\`, then \`${invokePrefix()} finalize\`.`);
+}
+
+function cmdVerify(project, taskId) {
+  const v = core.verifyTask(project, taskId, { inherit: true });
+  if (!v.ran) {
+    process.stderr.write(`Error: ${taskId} has no Verify command.\n`);
     process.exit(1);
   }
-
-  const n      = nextTaskId(project);
-  const taskId = `T-${String(n).padStart(3, '0')}`;
-  const slug   = slugify(title);
-  const filename  = `${taskId}-${slug}.md`;
-  const taskPath  = path.join(project, 'tasks', filename);
-  const desc      = description || title;
-  const deps      = after || 'none';
-  const nextStep  = `Proceed to T-${String(n + 1).padStart(3, '0')}.`;
-
-  const content = `\
-Status: pending
-
-Goal: ${desc}
-
-Context:
-
-Dependencies: ${deps}
-
-Subtasks:
-
-Done Criteria:
-
-Verification:
-
-Next Step:
-${nextStep}
-
-Blockers:
-None
-`;
-
-  fs.writeFileSync(taskPath, content, 'utf8');
-
-  const state = readState(project);
-  if (!state.current_task) {
-    state.current_task = taskId;
-    writeState(project, state);
-    console.log(`Created ${taskPath}  (set as current_task)`);
+  if (v.ok) {
+    console.log(`✓ ${taskId} verification passed`);
   } else {
-    console.log(`Created ${taskPath}`);
+    process.stderr.write(`✗ ${taskId} verification failed (exit ${v.code})\n`);
+    process.exit(v.code || 1);
   }
 }
 
+function cmdTaskBlock(project, taskId, reason, strategy) {
+  const r = core.blockTask(project, taskId, { reason, strategy });
+  console.log(`${r.taskId} → blocked`);
+}
+
+function cmdTaskUnblock(project, taskId) {
+  const r = core.unblockTask(project, taskId);
+  console.log(`${r.taskId} → pending`);
+}
+
+function cmdValidate(project) {
+  const { ok, errors } = core.validateProject(project);
+  if (ok) {
+    console.log('✓ valid');
+    return;
+  }
+  process.stderr.write(`✗ ${errors.length} problem(s):\n`);
+  for (const e of errors) process.stderr.write(`  - ${e}\n`);
+  process.exit(1);
+}
+
+function cmdFinalize(project) {
+  const r = core.finalize(project, 'completed');
+  console.log(`phase → ${r.phase}`);
+}
+
+function cmdNext(project, all, json) {
+  const runnable = core.runnableTasks(project);
+  const chosen = all ? runnable : runnable.slice(0, 1);
+  if (json) {
+    console.log(JSON.stringify(chosen.map(t => ({ id: t.id, goal: t.goal, dependencies: t.dependencies })), null, 2));
+    return;
+  }
+  if (chosen.length === 0) {
+    console.log('No runnable task — all tasks are completed, blocked, or waiting on dependencies.');
+    return;
+  }
+  for (const t of chosen) {
+    console.log(`${t.id}  ${t.goal || t.slug}`);
+  }
+  if (all && chosen.length > 1) {
+    console.log(`\n${chosen.length} tasks can run in parallel. Claim one with \`${invokePrefix()} task start <id>\`.`);
+  }
+}
+
+function cmdClaim(project, taskId, agent) {
+  const r = core.claimTask(project, taskId, { agent });
+  console.log(`${r.taskId} claimed by '${r.agent}'`);
+}
+
+function cmdRelease(project, taskId) {
+  const r = core.releaseTask(project, taskId);
+  console.log(`${r.taskId} released`);
+}
+
+function cmdWorktree(project, taskId) {
+  const r = core.createWorktree(project, taskId);
+  console.log(`Created worktree at ${r.path} on branch ${r.branch}`);
+  console.log(`Next: cd ${r.path} && ${invokePrefix()} task start ${taskId}`);
+}
+
 function cmdStatus(filterProject) {
-  const inPlace = !filterProject && isProjectDir('.');
+  const inPlace = !filterProject && core.isProjectDir('.');
 
   const entries = inPlace
     ? ['.']
     : fs.readdirSync('.', { withFileTypes: true })
         .filter(d => d.isDirectory())
-        .filter(d => isProjectDir(d.name))
+        .filter(d => core.isProjectDir(d.name))
         .map(d => d.name)
         .sort();
 
@@ -323,46 +191,34 @@ function cmdStatus(filterProject) {
   for (const projectPath of entries) {
     if (filterProject && projectPath !== filterProject) continue;
 
-    let state;
+    let s;
     try {
-      state = JSON.parse(fs.readFileSync(path.join(projectPath, '.ai', 'PROJECT_STATE.json'), 'utf8'));
+      s = core.projectSummary(projectPath);
     } catch {
       continue;
     }
 
-    const projectName = projectPath === '.' ? state.project : projectPath;
-    const phase     = (state.phase || '?');
-    const current   = state.current_task || '-';
-    const completed = (state.completed_tasks || []).length;
-    const total     = countTasks(projectPath);
-    const blocked   = state.blocked ? 'yes' : 'no';
-    const done      = `${completed}/${total}`;
-
     console.log(
-      projectName.padEnd(colW[0]) + ' ' +
-      phase.padEnd(colW[1])       + ' ' +
-      current.padEnd(colW[2])     + ' ' +
-      done.padEnd(colW[3])        + ' ' +
-      blocked
+      s.name.padEnd(colW[0])                 + ' ' +
+      s.phase.padEnd(colW[1])                + ' ' +
+      s.current.padEnd(colW[2])              + ' ' +
+      `${s.completed}/${s.total}`.padEnd(colW[3]) + ' ' +
+      (s.blocked ? 'yes' : 'no')
     );
   }
 }
 
-function cmdPlan(project, execute) {
-  if (!isProjectDir(project)) {
-    const msg = project === '.'
-      ? 'Error: not inside a project directory.\n'
-      : `Error: project '${project}' not found.\n`;
-    process.stderr.write(msg);
-    process.exit(1);
+function requireProject(project) {
+  if (!core.isProjectDir(project)) {
+    throw new WorkflowError(project === '.'
+      ? 'not inside a project directory.'
+      : `project '${project}' not found.`);
   }
+}
 
-  const state     = readState(project);
-  const phase     = state.phase || 'prototype';
-  const current   = state.current_task || 'none';
-  const blocked   = state.blocked ? 'true' : 'false';
-  const completed = (state.completed_tasks || []).length;
-  const total     = countTasks(project);
+function cmdPlan(project, execute) {
+  requireProject(project);
+  const s = core.stateSummary(project);
 
   const prefix = project === '.' ? '' : `Navigate to ${project}/ and `;
   if (execute) {
@@ -372,25 +228,13 @@ function cmdPlan(project, execute) {
     console.log(`${prefix}Follow .ai/AGENT_PLAN_HERE.md to begin planning.`);
     console.log(`Mode: plan-only — after presenting the task plan, stop and wait for the user to run \`${invokePrefix()} start\`.`);
   }
-  console.log(`Current state: phase=${phase}, current_task=${current}, blocked=${blocked}.`);
-  console.log(`Completed: ${completed}/${total} tasks.`);
+  console.log(`Current state: phase=${s.phase}, current_task=${s.current}, blocked=${s.blocked}.`);
+  console.log(`Completed: ${s.completed}/${s.total} tasks.`);
 }
 
 function cmdStart(project, all) {
-  if (!isProjectDir(project)) {
-    const msg = project === '.'
-      ? 'Error: not inside a project directory.\n'
-      : `Error: project '${project}' not found.\n`;
-    process.stderr.write(msg);
-    process.exit(1);
-  }
-
-  const state     = readState(project);
-  const phase     = state.phase || 'prototype';
-  const current   = state.current_task || 'none';
-  const blocked   = state.blocked ? 'true' : 'false';
-  const completed = (state.completed_tasks || []).length;
-  const total     = countTasks(project);
+  requireProject(project);
+  const s = core.stateSummary(project);
 
   const prefix = project === '.' ? '' : `Navigate to ${project}/ and `;
   console.log(`${prefix}Follow .ai/AGENT_START_HERE.md to begin working.`);
@@ -399,8 +243,8 @@ function cmdStart(project, all) {
   } else {
     console.log(`Mode: single-task — after completing and summarizing one task, ask the user whether to continue with the next task and stop.`);
   }
-  console.log(`Current state: phase=${phase}, current_task=${current}, blocked=${blocked}.`);
-  console.log(`Completed: ${completed}/${total} tasks.`);
+  console.log(`Current state: phase=${s.phase}, current_task=${s.current}, blocked=${s.blocked}.`);
+  console.log(`Completed: ${s.completed}/${s.total} tasks.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -416,10 +260,22 @@ function parseFlags(argv) {
       flags.description = argv[++i];
     } else if (arg === '--after') {
       flags.after = argv[++i];
+    } else if (arg === '--reason' || arg === '-r') {
+      flags.reason = argv[++i];
+    } else if (arg === '--strategy' || arg === '-s') {
+      flags.strategy = argv[++i];
     } else if (arg === '--execute' || arg === '-e') {
       flags.execute = true;
     } else if (arg === '--all' || arg === '-a') {
       flags.all = true;
+    } else if (arg === '--force' || arg === '-f') {
+      flags.force = true;
+    } else if (arg === '--no-verify') {
+      flags.noVerify = true;
+    } else if (arg === '--json') {
+      flags.json = true;
+    } else if (arg === '--agent') {
+      flags.agent = argv[++i];
     } else {
       positional.push(arg);
     }
@@ -431,10 +287,27 @@ const USAGE = `\
 Usage:
   agent-workflow init [<project>] [--description|-d "..."]
   agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
+  agent-workflow task start [<project>] <id> [--agent NAME]
+  agent-workflow task complete [<project>] <id> [--force|-f] [--no-verify]
+  agent-workflow task verify [<project>] <id>
+  agent-workflow task block [<project>] <id> --reason "..." [--strategy "..."]
+  agent-workflow task unblock [<project>] <id>
+  agent-workflow next [<project>] [--all] [--json]
+  agent-workflow claim [<project>] <id> [--agent NAME]
+  agent-workflow release [<project>] <id>
+  agent-workflow worktree [<project>] <id>
   agent-workflow status [<project>]
+  agent-workflow validate [<project>]
+  agent-workflow finalize [<project>]
+  agent-workflow mcp [<project>]
   agent-workflow plan [<project>] [--execute]
   agent-workflow start [<project>] [--all]
 `;
+
+function fail(message) {
+  process.stderr.write(`Error: ${message}`);
+  process.exit(1);
+}
 
 function main() {
   const argv = process.argv.slice(2);
@@ -452,23 +325,80 @@ function main() {
     cmdInit(positional[0] || '.', flags.description || '');
 
   } else if (command === 'task') {
-    if (rest[0] !== 'add') {
-      process.stderr.write(`Error: unknown task subcommand '${rest[0]}'.\n` + USAGE);
-      process.exit(1);
-    }
+    const sub = rest[0];
     const { flags, positional } = parseFlags(rest.slice(1));
-    let taskProject, taskTitle;
-    if (positional[1]) {
-      taskProject = positional[0];
-      taskTitle   = positional[1];
-    } else if (positional[0] && isProjectDir('.')) {
-      taskProject = '.';
-      taskTitle   = positional[0];
+
+    if (sub === 'add') {
+      let taskProject, taskTitle;
+      if (positional[1]) {
+        taskProject = positional[0];
+        taskTitle   = positional[1];
+      } else if (positional[0] && core.isProjectDir('.')) {
+        taskProject = '.';
+        taskTitle   = positional[0];
+      } else {
+        fail('task add requires <title> (run from project dir) or <project> <title>.\n' + USAGE);
+      }
+      cmdTaskAdd(taskProject, taskTitle, flags.description || '', flags.after || '');
+
+    } else if (sub === 'start') {
+      const { project, taskId } = resolveTaskArgs(positional, 'start');
+      cmdTaskStart(project, taskId, agentName(flags));
+
+    } else if (sub === 'complete') {
+      const { project, taskId } = resolveTaskArgs(positional, 'complete');
+      cmdTaskComplete(project, taskId, { force: flags.force || false, noVerify: flags.noVerify || false });
+
+    } else if (sub === 'verify') {
+      const { project, taskId } = resolveTaskArgs(positional, 'verify');
+      cmdVerify(project, taskId);
+
+    } else if (sub === 'block') {
+      const { project, taskId } = resolveTaskArgs(positional, 'block');
+      cmdTaskBlock(project, taskId, flags.reason || '', flags.strategy || '');
+
+    } else if (sub === 'unblock') {
+      const { project, taskId } = resolveTaskArgs(positional, 'unblock');
+      cmdTaskUnblock(project, taskId);
+
     } else {
-      process.stderr.write('Error: task add requires <title> (run from project dir) or <project> <title>.\n' + USAGE);
-      process.exit(1);
+      fail(`unknown task subcommand '${sub}'.\n` + USAGE);
     }
-    cmdTaskAdd(taskProject, taskTitle, flags.description || '', flags.after || '');
+
+  } else if (command === 'next') {
+    const { flags, positional } = parseFlags(rest);
+    cmdNext(positional[0] || '.', flags.all || false, flags.json || false);
+
+  } else if (command === 'claim') {
+    const { flags, positional } = parseFlags(rest);
+    const { project, taskId } = resolveTaskArgs(positional, 'claim');
+    cmdClaim(project, taskId, agentName(flags));
+
+  } else if (command === 'release') {
+    const { positional } = parseFlags(rest);
+    const { project, taskId } = resolveTaskArgs(positional, 'release');
+    cmdRelease(project, taskId);
+
+  } else if (command === 'worktree') {
+    const { positional } = parseFlags(rest);
+    const { project, taskId } = resolveTaskArgs(positional, 'worktree');
+    cmdWorktree(project, taskId);
+
+  } else if (command === 'validate') {
+    const { positional } = parseFlags(rest);
+    cmdValidate(positional[0] || '.');
+
+  } else if (command === 'finalize') {
+    const { positional } = parseFlags(rest);
+    cmdFinalize(positional[0] || '.');
+
+  } else if (command === 'mcp') {
+    const { positional } = parseFlags(rest);
+    // Lazy-require: the MCP SDK only loads when the server is actually started.
+    require('./mcp_server').runServer(positional[0] || '.').catch(err => {
+      process.stderr.write(`Error: mcp server failed: ${err.stack || err}\n`);
+      process.exit(1);
+    });
 
   } else if (command === 'status') {
     const { positional } = parseFlags(rest);
@@ -483,9 +413,16 @@ function main() {
     cmdStart(positional[0] || '.', flags.all || false);
 
   } else {
-    process.stderr.write(`Error: unknown command '${command}'.\n` + USAGE);
-    process.exit(1);
+    fail(`unknown command '${command}'.\n` + USAGE);
   }
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  if (err instanceof WorkflowError) {
+    process.stderr.write(`Error: ${err.message}\n`);
+    process.exit(err.code);
+  }
+  throw err;
+}

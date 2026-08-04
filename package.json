@@ -11,9 +11,16 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test cli/agent_workflow.test.js"
+    "test": "node --test \"cli/*.test.js\""
   },
   "files": [
-    "cli/agent_workflow.js"
-  ]
+    "cli/agent_workflow.js",
+    "cli/core.js",
+    "cli/templates.js",
+    "cli/mcp_server.js",
+    "schema/project-state.schema.json"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
 }
