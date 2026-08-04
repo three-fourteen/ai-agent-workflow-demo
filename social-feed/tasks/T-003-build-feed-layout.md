@@ -5,8 +5,7 @@ Goal: build feed layout
 Context:
 Build the main layout for the minimal Threads/X style feed UI using the downloaded mockups.
 
-Dependencies:
-T-001-setup-project, T-002-fetch-stitch-mockups
+Dependencies: T-001, T-002
 
 Subtasks:
 
@@ -19,6 +18,8 @@ The main structural layout of the feed matches the mockup.
 
 Verification:
 Run local dev server and visually inspect the layout.
+
+Verify: npm run build
 
 Next Step:
 Proceed to T-004.

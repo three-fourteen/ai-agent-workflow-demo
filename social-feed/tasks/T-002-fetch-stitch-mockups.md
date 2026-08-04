@@ -9,8 +9,7 @@ Screen ID: fdaf981ed08a40878d772859a106bbe8
 
 Use `curl -L` to download the hosted URLs if needed.
 
-Dependencies:
-T-001-setup-project
+Dependencies: T-001
 
 Subtasks:
 
@@ -22,6 +21,8 @@ Mockups are downloaded and available in the repository.
 
 Verification:
 Verify files exist in the file system.
+
+Verify: test -d assets/designs
 
 Next Step:
 Proceed to T-003.

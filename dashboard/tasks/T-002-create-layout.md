@@ -3,10 +3,9 @@ Status: pending
 Goal: create layout
 
 Context:
-Create the main structure for the simple analytics dashboard, including a sidebar navigation and a main content area.
+Create the main structure for the simple analytics dashboard, including a sidebar navigation and a main content area. Independent of the data layer, so it runs in parallel with T-004 (mock API).
 
-Dependencies:
-T-001-setup-project
+Dependencies: T-001
 
 Subtasks:
 
@@ -20,8 +19,10 @@ Basic dashboard layout is implemented and responsive.
 Verification:
 Run the layout in the browser and verify the components render correctly.
 
+Verify: npm run build
+
 Next Step:
-Proceed to T-003.
+Runs in parallel with T-004. T-003 (charts) joins both once they are complete.
 
 Blockers:
 None

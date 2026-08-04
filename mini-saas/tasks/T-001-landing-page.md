@@ -20,6 +20,8 @@ Landing page renders successfully with responsive layout.
 Verification:
 Verify landing page renders successfully in a browser.
 
+Verify: test -f package.json
+
 Next Step:
 Proceed to T-002.
 

@@ -18,8 +18,11 @@ Project is initialized with a package.json or equivalent and ready for developme
 Verification:
 Run the start command and verify the app compiles or runs without errors.
 
+Verify: test -f package.json
+
 Next Step:
-Proceed to T-002.
+Once complete, T-002 (layout) and T-004 (mock API) both unblock and can run in
+parallel — run `agent-workflow next --all` to see the fan-out.
 
 Blockers:
 None

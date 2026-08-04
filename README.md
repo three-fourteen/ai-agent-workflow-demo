@@ -1,7 +1,5 @@
 # ai-agent-workflow-demo
 
-![AI workflow](docs/workflow-diagram.png)
-
 A demonstration of **Git-native task orchestration for AI coding agents**.
 
 This repository explores a simple idea:
@@ -86,15 +84,28 @@ tasks/
 
 # How the workflow works
 
+State is **owned by the CLI**, not hand-edited. Agents change state only through
+commands, so every transition is validated and every completion is verified.
+
 Agents follow a simple loop:
 
-1. Read `.ai/PROJECT_STATE.json`
-2. Open the current task in `tasks/`
-3. Execute subtasks
-4. Update the project state
-5. Continue with the next task
+1. `agent-workflow next` — find the next runnable task (dependencies satisfied, unclaimed)
+2. `agent-workflow task start <id>` — claim it (pending → in-progress)
+3. Implement the task's subtasks
+4. `agent-workflow task complete <id>` — runs the task's `Verify` command, then marks it completed (in-progress → completed)
+5. Repeat; `agent-workflow validate` before finishing
+
+Tasks move through a guarded state machine — illegal transitions are rejected:
+
+```
+pending ──▶ in-progress ──▶ completed
+   └──────────▶ blocked ◀──────────┘   (unblock returns a task to pending)
+```
 
 Because the **state lives in the repository**, different agents can collaborate without shared memory.
+Multiple agents can work in parallel: `agent-workflow next --all` lists every independent
+runnable task, and `agent-workflow task start` claims one atomically so two agents never
+pick up the same work.
 
 Example relay:
 
@@ -136,12 +147,26 @@ npm uninstall -g agent-workflow
 
 # CLI
 
-A zero-dependency Node.js CLI for scaffolding and managing projects.
+A Node.js CLI for scaffolding and driving projects. The **core has no runtime
+dependencies**; the optional MCP server (`agent-workflow mcp`) is the one exception
+and uses the official `@modelcontextprotocol/sdk`, loaded lazily only when started.
 
 ```
 agent-workflow init [<project>] [--description "..."]
 agent-workflow task add [<project>] <title> [--description "..."] [--after T-001]
+agent-workflow task start [<project>] <id> [--agent NAME]
+agent-workflow task complete [<project>] <id> [--force] [--no-verify]
+agent-workflow task verify [<project>] <id>
+agent-workflow task block [<project>] <id> --reason "..." [--strategy "..."]
+agent-workflow task unblock [<project>] <id>
+agent-workflow next [<project>] [--all] [--json]
+agent-workflow claim [<project>] <id> [--agent NAME]
+agent-workflow release [<project>] <id>
+agent-workflow worktree [<project>] <id>
 agent-workflow status [<project>]
+agent-workflow validate [<project>]
+agent-workflow finalize [<project>]
+agent-workflow mcp [<project>]
 agent-workflow plan [<project>] [--execute]
 agent-workflow start [<project>] [--all]
 ```
@@ -182,6 +207,85 @@ my-app         prototype  T-001-setup-project          0/2    no
 social-feed    prototype  T-001-setup-project          0/4    no
 ```
 
+### task start / complete / block / unblock
+
+The CLI owns state transitions. Agents never hand-edit `PROJECT_STATE.json` or a
+task's `Status:` line — they call these commands, and the CLI enforces the state
+machine.
+
+```
+agent-workflow task start T-001            # pending → in-progress (claims the task)
+agent-workflow task complete T-001         # in-progress → completed (runs Verify first)
+agent-workflow task block T-001 --reason "waiting on API keys" --strategy "ask user"
+agent-workflow task unblock T-001          # blocked → pending
+```
+
+Illegal transitions (e.g. completing a task that was never started) are rejected.
+
+### task verify / verification-gated completion
+
+Each task file has a `Verify:` line — a shell command that proves the task is done
+(exit 0 = pass). `task complete` runs it first and **refuses to complete on failure**.
+
+```
+agent-workflow task verify T-001           # run the check on its own
+agent-workflow task complete T-001         # blocked if Verify fails
+agent-workflow task complete T-001 --force # override (records it as unverified)
+agent-workflow task complete T-001 --no-verify   # accept a task that has no Verify command
+```
+
+### next
+
+Prints the runnable tasks — pending, all dependencies completed, and not already
+claimed. `--all` lists every independent task (the parallel fan-out set); `--json`
+emits machine-readable output.
+
+```
+agent-workflow next               # the single next task
+agent-workflow next --all         # every task that can run right now
+agent-workflow next --all --json
+```
+
+### claim / release
+
+Atomically claim a task so parallel agents never pick up the same work. `task start`
+claims automatically; use these for explicit locking. Locks live in `.ai/locks/`
+(git-ignored) and are created race-safe.
+
+```
+agent-workflow claim T-002 --agent alice
+agent-workflow release T-002
+```
+
+### worktree
+
+Creates a git worktree on a `task/<id>-...` branch (placed beside the repo) so an
+agent can work a task in isolation while others run in parallel.
+
+```
+agent-workflow worktree T-002
+```
+
+### validate
+
+Checks the state file and task graph — schema shape, referential integrity,
+dependency cycles, and consistency between task statuses and `PROJECT_STATE.json`.
+Exits non-zero on any problem, so it works as a git pre-commit hook.
+
+```
+agent-workflow validate
+```
+
+### mcp
+
+Starts a Model Context Protocol server over stdio, exposing the workflow as typed
+tools (`next_tasks`, `start_task`, `complete_task`, `validate`, …). Git stays the
+source of truth; MCP is just a typed interface over the same file mutations.
+
+```
+agent-workflow mcp                # serve the current project
+```
+
 ### plan
 
 Prints a ready-to-paste prompt that puts the agent into planning mode — it will ask clarifying questions and create tasks before writing any code.
@@ -209,7 +313,7 @@ agent-workflow start          # from inside the project directory
 ```
 Navigate to my-app/ and follow .ai/AGENT_START_HERE.md to begin working.
 Mode: single-task — after completing and summarizing one task, ask the user whether to continue with the next task and stop.
-Current state: phase=prototype, current_task=T-001-setup-project, blocked=false.
+Current state: phase=prototype, current_task=T-001, blocked=false.
 Completed: 0/2 tasks.
 ```
 
@@ -272,10 +376,13 @@ ai-agent-workflow-demo
 ├─ package.json
 │
 ├─ cli/
-│   └─ agent_workflow.js
+│   ├─ agent_workflow.js   # thin CLI: arg parsing + output
+│   ├─ core.js             # workflow engine: parser, state machine, scheduler, validation
+│   ├─ templates.js        # embedded .ai/ scaffolding
+│   └─ mcp_server.js       # MCP server over the engine (optional)
 │
-├─ docs/
-│   └─ workflow-diagram.png
+├─ schema/
+│   └─ project-state.schema.json
 │
 ├─ social-feed/
 ├─ dashboard/

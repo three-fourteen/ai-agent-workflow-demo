@@ -5,8 +5,7 @@ Goal: add interaction buttons
 Context:
 Add interaction buttons (Like, Reply, Repost, Share) to the feed items to match the Thread/X style UI.
 
-Dependencies:
-T-003-build-feed-layout
+Dependencies: T-003
 
 Subtasks:
 
@@ -19,6 +18,8 @@ Buttons appear visually correct on each post.
 
 Verification:
 Check the UI to ensure buttons are present and correctly styled.
+
+Verify: npm run build
 
 Next Step:
 None.

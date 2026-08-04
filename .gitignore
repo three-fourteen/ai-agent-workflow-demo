@@ -1,0 +1,4 @@
+node_modules/
+
+# Per-project runtime lock files (also ignored by each project's .ai/.gitignore)
+.ai/locks/

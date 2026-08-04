@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/three-fourteen/ai-agent-workflow-demo/schema/project-state.schema.json",
+  "title": "PROJECT_STATE",
+  "description": "Git-native workflow state. Owned by the agent-workflow CLI; edit through commands, not by hand.",
+  "type": "object",
+  "required": ["project", "phase", "current_task", "blocked", "completed_tasks"],
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "Human-readable project name."
+    },
+    "phase": {
+      "type": "string",
+      "description": "Lifecycle phase.",
+      "examples": ["prototype", "building", "completed"]
+    },
+    "current_task": {
+      "type": ["string", "null"],
+      "pattern": "^T-\\d+$",
+      "description": "The single-task-mode active task id, or null when none is selected."
+    },
+    "blocked": {
+      "type": "boolean",
+      "description": "True when any task is blocked."
+    },
+    "completed_tasks": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^T-\\d+$" },
+      "description": "Task ids that have been completed."
+    },
+    "in_progress": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^T-\\d+$" },
+      "description": "Task ids currently being worked (supports parallel agents)."
+    },
+    "unverified": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^T-\\d+$" },
+      "description": "Task ids completed without a passing Verify check (--force / --no-verify)."
+    },
+    "description": {
+      "type": "string"
+    },
+    "block_reason": {
+      "type": "string",
+      "description": "Why the project is blocked (set when a task is blocked)."
+    },
+    "unblock_strategy": {
+      "type": "string",
+      "description": "How to get unblocked."
+    },
+    "claims": {
+      "type": "object",
+      "description": "Task id -> { agent, ts } lock records for parallel scheduling.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "agent": { "type": "string" },
+          "ts": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
