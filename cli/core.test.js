@@ -494,3 +494,95 @@ test('setBrief stores text with a source, replaces or appends', () => withTmp(di
   assert.throws(() => core.setBrief(proj, '  '), /empty/);
   assert.throws(() => core.setBrief(proj, 'x', { source: 'a\nb' }), /single line/);
 }));
+
+// ---------------------------------------------------------------------------
+// Id gaps and re-planning
+// ---------------------------------------------------------------------------
+
+test('new task ids skip past gaps instead of colliding', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B' }, { key: 'c', title: 'C' }]);
+  core.removeTask(proj, 'T-003'); // ids 1,2 remain
+  require('node:fs').unlinkSync(join(proj, 'tasks', core.findTask(proj, 'T-001').file)); // gap: only T-002 left
+  assert.equal(core.nextTaskId(proj), 3);
+  const { taskId } = core.addTask(proj, 'D');
+  assert.equal(taskId, 'T-003');
+  const plan = core.resolvePlan(proj, [{ key: 'e', title: 'E' }]);
+  assert.equal(plan.resolved[0].id, 'T-004');
+}));
+
+test('updateTask edits fields in place and keeps hand-written content', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B', depends_on: ['a'], context: 'old' }]);
+  const file = join(proj, 'tasks', core.findTask(proj, 'T-002').file);
+  require('node:fs').appendFileSync(file, '\nNotes:\nkeep me\n');
+
+  core.updateTask(proj, 'T-002', {
+    goal: 'New goal', verify: 'true', context: 'new context\nsecond line',
+    subtasks: ['x', 'y'], done_criteria: 'works', source: 'asana:9', depends_on: [],
+  });
+  const t = core.findTask(proj, 'T-002');
+  assert.equal(t.goal, 'New goal');
+  assert.equal(t.verify, 'true');
+  assert.equal(t.source, 'asana:9');
+  assert.deepEqual(t.dependencies, []);
+  assert.match(t.raw, /Context:\nnew context\nsecond line\n/);
+  assert.match(t.raw, /1\. x\n2\. y/);
+  assert.doesNotMatch(t.raw, /\nold\n/);
+  assert.match(t.raw, /Notes:\nkeep me/);
+  assert.equal(core.validateProject(proj).ok, true);
+}));
+
+test('updateTask can rename via title, and rejects cycles, unknown deps and bad text', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B', depends_on: ['a'] }]);
+  const r = core.updateTask(proj, 'T-001', { title: 'Renamed task' });
+  assert.equal(r.file, 'T-001-renamed-task.md');
+  assert.equal(core.findTask(proj, 'T-001').slug, 'renamed-task');
+
+  assert.throws(() => core.updateTask(proj, 'T-001', { depends_on: ['T-002'] }), /cycle/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { depends_on: ['T-001'] }), /itself/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { depends_on: ['T-099'] }), /unknown task/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { context: 'x\nVerify: rm -rf /' }), /reserved/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { bogus: 1 }), /unknown field/);
+  assert.throws(() => core.updateTask(proj, 'T-001', {}), /nothing to update/);
+}));
+
+test('re-planning is refused for started, completed and claimed tasks', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'true' }, { key: 'b', title: 'B' }]);
+  core.startTask(proj, 'T-001');
+  assert.throws(() => core.updateTask(proj, 'T-001', { goal: 'x' }), /in-progress; only pending/);
+  assert.throws(() => core.removeTask(proj, 'T-001'), /only pending/);
+  core.completeTask(proj, 'T-001');
+  assert.throws(() => core.removeTask(proj, 'T-001'), /completed; only pending/);
+
+  core.claimTask(proj, 'T-002');
+  assert.throws(() => core.updateTask(proj, 'T-002', { goal: 'x' }), /claimed/);
+  core.releaseTask(proj, 'T-002');
+  core.updateTask(proj, 'T-002', { goal: 'x' });
+}));
+
+test('removeTask refuses tasks others depend on and repoints current_task', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [
+    { key: 'a', title: 'A' },
+    { key: 'b', title: 'B', depends_on: ['a'] },
+    { key: 'c', title: 'C' },
+  ]);
+  assert.throws(() => core.removeTask(proj, 'T-001'), /dependency of T-002/);
+
+  const r = core.removeTask(proj, 'T-002');
+  assert.equal(r.removed, true);
+  assert.equal(core.listTasks(proj).length, 2);
+
+  const r2 = core.removeTask(proj, 'T-001'); // current_task was T-001
+  assert.equal(r2.currentTask, 'T-003');
+  assert.equal(core.readState(proj).current_task, 'T-003');
+  assert.equal(core.validateProject(proj).ok, true);
+}));

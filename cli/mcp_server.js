@@ -202,6 +202,35 @@ function buildTools(base) {
       run: a => core.addTasks(proj(a), a.tasks),
     },
     {
+      name: 'update_task',
+      description: 'Re-plan: edit a pending, unclaimed task in place (title, goal, context, depends_on as task ids, subtasks, done_criteria, verify, source). Only the given fields change.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP, ...ID_PROP,
+          title:         TASK_SPEC.properties.title,
+          goal:          TASK_SPEC.properties.goal,
+          context:       TASK_SPEC.properties.context,
+          depends_on:    { type: 'array', items: { type: 'string', pattern: '^T-\\d+$' }, description: 'Replaces the dependency list with these task ids.' },
+          subtasks:      TASK_SPEC.properties.subtasks,
+          done_criteria: TASK_SPEC.properties.done_criteria,
+          verify:        TASK_SPEC.properties.verify,
+          source:        TASK_SPEC.properties.source,
+        },
+        required: ['id'],
+      },
+      run: a => {
+        const { project, id, ...patch } = a;
+        return core.updateTask(proj(a), id, patch);
+      },
+    },
+    {
+      name: 'remove_task',
+      description: 'Re-plan: delete a pending, unclaimed task that nothing depends on. Ids are never renumbered.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.removeTask(proj(a), a.id),
+    },
+    {
       name: 'validate',
       description: 'Validate the state file and task graph. Returns { ok, errors }.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP } },

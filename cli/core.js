@@ -77,8 +77,13 @@ function countTasks(projectDir) {
   return listTaskFiles(projectDir).length;
 }
 
+/** Next free task number: highest existing id + 1, so gaps never cause collisions. */
 function nextTaskId(projectDir) {
-  return countTasks(projectDir) + 1;
+  const nums = listTaskFiles(projectDir)
+    .map(f => /^T-(\d+)/.exec(f))
+    .filter(Boolean)
+    .map(m => parseInt(m[1], 10));
+  return (nums.length ? Math.max(...nums) : 0) + 1;
 }
 
 function taskIdFromFilename(filename) {
@@ -283,6 +288,16 @@ const KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
 const RESERVED_LINE_RE = /^\s*(status|dependencies|goal|verify|source)\s*:/im;
 const MAX_SUBTASKS = 8;
 
+function checkOneLine(errors, label, v) {
+  if (typeof v !== 'string' || /[\r\n]/.test(v)) errors.push(`${label} must be a single-line string`);
+}
+function checkFreeText(errors, label, v) {
+  if (typeof v !== 'string') errors.push(`${label} must be a string`);
+  else if (RESERVED_LINE_RE.test(v)) {
+    errors.push(`${label} has a line starting with a reserved field (Status/Dependencies/Goal/Verify/Source)`);
+  }
+}
+
 /**
  * Validate a proposed plan and resolve it to concrete task ids WITHOUT writing
  * anything. Works before `init` (ids start at T-001) and when appending to an
@@ -307,15 +322,8 @@ function resolvePlan(project, specs) {
   const existingIds = new Set(exists ? listTasks(project).map(t => t.id) : []);
   const base = exists ? nextTaskId(project) : 1;
 
-  const oneLine = (label, v) => {
-    if (typeof v !== 'string' || /[\r\n]/.test(v)) errors.push(`${label} must be a single-line string`);
-  };
-  const freeText = (label, v) => {
-    if (typeof v !== 'string') errors.push(`${label} must be a string`);
-    else if (RESERVED_LINE_RE.test(v)) {
-      errors.push(`${label} has a line starting with a reserved field (Status/Dependencies/Goal/Verify/Source)`);
-    }
-  };
+  const oneLine = (label, v) => checkOneLine(errors, label, v);
+  const freeText = (label, v) => checkFreeText(errors, label, v);
 
   // --- per-task shape + key → id assignment ---
   const keyToId = new Map();
@@ -464,6 +472,153 @@ function addTasks(project, specs) {
     created: files.map(f => ({ key: f.r.key, id: f.r.id, file: f.file, verify: f.r.verify })),
     currentTask,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Re-planning — edit or remove tasks that haven't started
+// ---------------------------------------------------------------------------
+
+const HEADERS = ['Status', 'Goal', 'Source', 'Context', 'Dependencies', 'Subtasks',
+                 'Done Criteria', 'Verification', 'Verify', 'Next Step', 'Blockers'];
+const HEADER_RE = new RegExp(`^(${HEADERS.join('|')}):`, 'i');
+const headerRe = name => new RegExp(`^${name}:`, 'i');
+
+/** Replace (or insert) a single-line `Header: value` field. */
+function setLineField(raw, header, value) {
+  const lines = raw.split(/\r?\n/);
+  const i = lines.findIndex(l => headerRe(header).test(l));
+  if (i >= 0) lines[i] = `${header}: ${value}`;
+  else {
+    const g = lines.findIndex(l => headerRe('Goal').test(l));
+    lines.splice(g >= 0 ? g + 1 : lines.length, 0, ...(g >= 0 ? ['', `${header}: ${value}`] : [`${header}: ${value}`]));
+  }
+  return lines.join('\n');
+}
+
+/** Replace (or append) a block section — everything up to the next known header. */
+function setSection(raw, header, body) {
+  const lines = raw.split(/\r?\n/);
+  const i = lines.findIndex(l => headerRe(header).test(l));
+  const block = [`${header}:`, ...(body ? body.split(/\r?\n/) : []), ''];
+  if (i < 0) {
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    return [...lines, '', ...block].join('\n') + (raw.endsWith('\n') ? '' : '\n');
+  }
+  let end = i + 1;
+  while (end < lines.length && !HEADER_RE.test(lines[end])) end++;
+  lines.splice(i, end - i, ...block);
+  return lines.join('\n');
+}
+
+/** Throws unless the task can still be re-planned: pending and unclaimed. */
+function assertEditable(project, task) {
+  if (task.status !== 'pending') {
+    throw new WorkflowError(
+      `${task.id} is ${task.status}; only pending tasks can be changed` +
+      `${task.status === 'blocked' ? ' (unblock it first)' : ''}.`);
+  }
+  if (listLocks(project).includes(task.id)) {
+    throw new WorkflowError(`${task.id} is claimed by an agent; release it first.`);
+  }
+}
+
+/**
+ * Edit a pending task in place. `patch` fields: title (renames the file), goal,
+ * context, depends_on (task ids), subtasks, done_criteria, verify, source.
+ * Hand-written content outside the patched fields is left untouched.
+ */
+function updateTask(project, taskId, patch = {}) {
+  requireProjectDir(project);
+  const task = findTask(project, taskId);
+  assertEditable(project, task);
+
+  const known = ['title', 'goal', 'context', 'depends_on', 'subtasks', 'done_criteria', 'verify', 'source'];
+  const unknown = Object.keys(patch).filter(k => !known.includes(k));
+  if (unknown.length) throw new WorkflowError(`unknown field(s): ${unknown.join(', ')}.`);
+  if (!Object.keys(patch).length) throw new WorkflowError('nothing to update.');
+
+  const errors = [];
+  for (const f of ['title', 'goal', 'verify', 'source']) {
+    if (patch[f] !== undefined) checkOneLine(errors, f, patch[f]);
+  }
+  if (patch.title !== undefined && typeof patch.title === 'string') {
+    if (!patch.title.trim() || !slugify(patch.title)) errors.push('title needs at least one letter or digit');
+    if (patch.title.length > 80) errors.push('title is longer than 80 characters');
+  }
+  for (const f of ['context', 'done_criteria']) {
+    if (patch[f] !== undefined) checkFreeText(errors, f, patch[f]);
+  }
+  if (patch.subtasks !== undefined) {
+    if (!Array.isArray(patch.subtasks)) errors.push('subtasks must be an array');
+    else patch.subtasks.forEach((t, i) => checkFreeText(errors, `subtasks[${i}]`, t));
+  }
+
+  let deps = null;
+  if (patch.depends_on !== undefined) {
+    if (!Array.isArray(patch.depends_on)) errors.push('depends_on must be an array');
+    else {
+      const tasks = listTasks(project);
+      const byId = new Map(tasks.map(t => [t.id, t]));
+      deps = patch.depends_on.map(d => String(d).toUpperCase());
+      for (const d of deps) {
+        if (d === task.id) errors.push(`${task.id} cannot depend on itself`);
+        else if (!byId.has(d)) errors.push(`depends_on references unknown task '${d}'`);
+      }
+      // A cycle exists if the task is reachable from any of its new dependencies.
+      const seen = new Set();
+      const reaches = id => {
+        if (id === task.id) return true;
+        if (seen.has(id) || !byId.has(id)) return false;
+        seen.add(id);
+        return byId.get(id).dependencies.some(reaches);
+      };
+      if (!errors.length && deps.some(reaches)) errors.push(`depends_on would create a dependency cycle through ${task.id}`);
+    }
+  }
+  if (errors.length) throw new WorkflowError(`invalid update:\n${errors.map(e => `  - ${e}`).join('\n')}`);
+
+  let raw = task.raw;
+  if (patch.goal !== undefined)          raw = setLineField(raw, 'Goal', patch.goal);
+  if (patch.source !== undefined)        raw = setLineField(raw, 'Source', patch.source);
+  if (patch.verify !== undefined)        raw = setLineField(raw, 'Verify', patch.verify);
+  if (deps)                              raw = setLineField(raw, 'Dependencies', deps.length ? deps.join(', ') : 'none');
+  if (patch.context !== undefined)       raw = setSection(raw, 'Context', patch.context);
+  if (patch.done_criteria !== undefined) raw = setSection(raw, 'Done Criteria', patch.done_criteria);
+  if (patch.subtasks !== undefined) {
+    raw = setSection(raw, 'Subtasks', patch.subtasks.map((t, i) => `${i + 1}. ${t}`).join('\n'));
+  }
+
+  let file = task.file;
+  if (patch.title !== undefined) file = `${task.id}-${slugify(patch.title)}.md`;
+  const target = path.join(tasksDir(project), file);
+  if (file !== task.file && fs.existsSync(target)) throw new WorkflowError(`${file} already exists.`);
+
+  fs.writeFileSync(path.join(tasksDir(project), task.file), raw, 'utf8');
+  if (file !== task.file) fs.renameSync(path.join(tasksDir(project), task.file), target);
+  return { taskId: task.id, file };
+}
+
+/**
+ * Delete a pending task. Refuses while other tasks depend on it (update or
+ * remove those first). Ids are never reused or renumbered.
+ */
+function removeTask(project, taskId) {
+  requireProjectDir(project);
+  const task = findTask(project, taskId);
+  assertEditable(project, task);
+
+  const dependents = listTasks(project).filter(t => t.dependencies.includes(task.id)).map(t => t.id);
+  if (dependents.length) {
+    throw new WorkflowError(`${task.id} is a dependency of ${dependents.join(', ')}; update or remove those first.`);
+  }
+
+  fs.unlinkSync(path.join(tasksDir(project), task.file));
+  const state = readState(project);
+  if (state.current_task === task.id) {
+    state.current_task = selectNextTask(project, state);
+    writeState(project, state);
+  }
+  return { taskId: task.id, removed: true, currentTask: state.current_task };
 }
 
 const MAX_BRIEF_BYTES = 200 * 1024;
@@ -949,6 +1104,8 @@ module.exports = {
   addTask,
   resolvePlan,
   addTasks,
+  updateTask,
+  removeTask,
   setBrief,
   projectSummary,
   stateSummary,

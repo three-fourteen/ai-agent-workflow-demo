@@ -175,3 +175,22 @@ test('init_project creates a subdirectory but refuses to escape the served dir',
     assert.equal(core.isProjectDir(join(parent, 'escape')), false);
   });
 });
+
+test('update_task and remove_task re-plan over MCP, and refuse started tasks', async () => {
+  await withServer(async ({ client, proj }) => {
+    const upd = await client.callTool({ name: 'update_task', arguments: { id: 'T-002', verify: 'true', goal: 'Sharper goal' } });
+    assert.notEqual(upd.isError, true);
+    assert.equal(core.findTask(proj, 'T-002').goal, 'Sharper goal');
+
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    const blocked = await client.callTool({ name: 'update_task', arguments: { id: 'T-001', goal: 'x' } });
+    assert.equal(blocked.isError, true);
+
+    const dep = await client.callTool({ name: 'remove_task', arguments: { id: 'T-001' } });
+    assert.equal(dep.isError, true);
+
+    const rm = await client.callTool({ name: 'remove_task', arguments: { id: 'T-002' } });
+    assert.equal(payload(rm).removed, true);
+    assert.equal(core.listTasks(proj).length, 1);
+  });
+});
