@@ -11,6 +11,7 @@
  * Started by `agent-workflow mcp [<project>]`.
  */
 
+const path = require('path');
 const core = require('./core');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
@@ -31,7 +32,18 @@ const ID_PROP = {
 
 /** Build the tool table. `base` is the default project directory. */
 function buildTools(base) {
-  const proj = args => (args && args.project) || base;
+  // Resolve `project` and refuse anything outside the launch directory, so an
+  // agent can't point the engine (and its Verify shell commands) at other paths.
+  const root = path.resolve(base);
+  const proj = args => {
+    if (!args || !args.project) return base;
+    const target = path.resolve(root, args.project);
+    const rel = path.relative(root, target);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new core.WorkflowError(`project '${args.project}' is outside the served directory.`);
+    }
+    return target;
+  };
 
   return [
     {
@@ -87,17 +99,16 @@ function buildTools(base) {
     },
     {
       name: 'complete_task',
-      description: 'Move a task in-progress → completed. Runs its Verify command first and refuses on failure unless force/no_verify is set.',
+      description: 'Move a task in-progress → completed. Runs its Verify command first and refuses on failure. (Skipping verification with --force is CLI-only.)',
       inputSchema: {
         type: 'object',
         properties: {
           ...PROJECT_PROP, ...ID_PROP,
-          force: { type: 'boolean', description: 'Skip verification.' },
           no_verify: { type: 'boolean', description: 'Complete a task that has no Verify command.' },
         },
         required: ['id'],
       },
-      run: a => core.completeTask(proj(a), a.id, { force: !!a.force, noVerify: !!a.no_verify }),
+      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify }),
     },
     {
       name: 'block_task',
@@ -118,6 +129,12 @@ function buildTools(base) {
       description: 'Return a blocked task to pending.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
       run: a => core.unblockTask(proj(a), a.id),
+    },
+    {
+      name: 'release_task',
+      description: 'Release a task\'s lock (e.g. a stale claim from a crashed agent) without changing its status.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.releaseTask(proj(a), a.id),
     },
     {
       name: 'validate',

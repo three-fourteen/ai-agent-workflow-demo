@@ -282,6 +282,10 @@ Starts a Model Context Protocol server over stdio, exposing the workflow as type
 tools (`next_tasks`, `start_task`, `complete_task`, `validate`, …). Git stays the
 source of truth; MCP is just a typed interface over the same file mutations.
 
+MCP deliberately omits `--force`: skipping verification is CLI-only. The optional
+`project` argument must stay inside the directory the server was launched in.
+`release_task` clears a stale lock left by a crashed agent.
+
 ```
 agent-workflow mcp                # serve the current project
 ```

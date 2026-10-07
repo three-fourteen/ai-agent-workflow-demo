@@ -87,3 +87,30 @@ test('validate reports ok for a fresh project', async () => {
     assert.deepEqual(payload(res), { ok: true, errors: [] });
   });
 });
+
+test('complete_task ignores force over MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    const res = await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', force: true } });
+    assert.equal(res.isError, true); // task has no Verify command; force is not honored
+    assert.equal(core.findTask(proj, 'T-001').status, 'in-progress');
+  });
+});
+
+test('project outside the served directory is rejected', async () => {
+  await withServer(async ({ client }) => {
+    const res = await client.callTool({ name: 'get_state', arguments: { project: '../..' } });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /outside the served directory/);
+  });
+});
+
+test('release_task clears a stale claim', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    assert.deepEqual(core.listLocks(proj), ['T-001']);
+    const res = await client.callTool({ name: 'release_task', arguments: { id: 'T-001' } });
+    assert.notEqual(res.isError, true);
+    assert.deepEqual(core.listLocks(proj), []);
+  });
+});

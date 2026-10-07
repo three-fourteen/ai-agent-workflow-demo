@@ -399,11 +399,16 @@ function startTask(project, taskId, { agent = 'agent' } = {}) {
   assertTransition(task.status, 'in-progress');
 
   acquireLock(project, task.id, agent); // throws if another agent holds it
-  const state = readState(project);
-  setTaskStatus(project, task, 'in-progress');
-  state.in_progress = addUnique(state.in_progress, task.id);
-  if (!state.current_task) state.current_task = task.id;
-  writeState(project, state);
+  try {
+    const state = readState(project);
+    setTaskStatus(project, task, 'in-progress');
+    state.in_progress = addUnique(state.in_progress, task.id);
+    if (!state.current_task) state.current_task = task.id;
+    writeState(project, state);
+  } catch (err) {
+    releaseLock(project, task.id); // don't leave an orphaned claim behind
+    throw err;
+  }
   return { taskId: task.id, status: 'in-progress' };
 }
 
