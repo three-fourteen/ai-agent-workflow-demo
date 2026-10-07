@@ -145,6 +145,37 @@ agent-workflow --help
 afw --help
 ```
 
+### Option C — clone and link (works on any npm version)
+
+```bash
+git clone https://github.com/three-fourteen/ai-agent-workflow-demo
+cd ai-agent-workflow-demo && npm install && npm link
+agent-workflow --help
+```
+
+### Troubleshooting: `EALLOWGIT`
+
+```
+npm error code EALLOWGIT
+npm error Fetching packages of type "git" have been disabled
+```
+
+npm 12 and later refuse git-hosted packages (`github:…`) by default
+([`allow-git`](https://docs.npmjs.com/cli/v12/using-npm/config)). Either use Option C,
+or opt in for a single command:
+
+```bash
+npm install -g github:three-fourteen/ai-agent-workflow-demo --allow-git=all
+npx --allow-git=all github:three-fourteen/ai-agent-workflow-demo init my-project
+# or: NPM_CONFIG_ALLOW_GIT=all npx github:three-fourteen/ai-agent-workflow-demo init my-project
+```
+
+The MCP server needs a local checkout either way, so register it with an absolute path:
+
+```bash
+claude mcp add agent-workflow -- node /ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js .
+```
+
 ### Uninstall
 
 ```bash
