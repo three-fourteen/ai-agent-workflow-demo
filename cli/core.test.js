@@ -379,3 +379,118 @@ test('validateProject flags status/completed_tasks inconsistency', () => withTmp
   assert.equal(ok, false);
   assert.ok(errors.some(e => /not in completed_tasks/.test(e)));
 }));
+
+// ---------------------------------------------------------------------------
+// Planning — resolvePlan / addTasks / setBrief / in-place init
+// ---------------------------------------------------------------------------
+
+const DIAMOND = [
+  { key: 'setup',  title: 'Setup', verify: 'true' },
+  { key: 'layout', title: 'Layout', depends_on: ['setup'], verify: 'true' },
+  { key: 'api',    title: 'Mock API', depends_on: ['setup'], verify: 'true' },
+  { key: 'charts', title: 'Charts', depends_on: ['layout', 'api'], verify: 'true', source: 'asana:42' },
+];
+
+test('resolvePlan works before init and returns parallel waves', () => withTmp(dir => {
+  const plan = core.resolvePlan(join(dir, 'nope'), DIAMOND);
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.waves, [['T-001'], ['T-002', 'T-003'], ['T-004']]);
+  assert.deepEqual(plan.resolved[3].depends_on, ['T-002', 'T-003']);
+  assert.deepEqual(plan.warnings, []);
+}));
+
+test('resolvePlan reports unknown deps, cycles, duplicates and missing verify', () => withTmp(dir => {
+  const proj = join(dir, 'p');
+  const bad = core.resolvePlan(proj, [
+    { key: 'a', title: 'A', depends_on: ['b'] },
+    { key: 'b', title: 'B', depends_on: ['a'] },
+    { key: 'a', title: 'A again' },
+    { key: 'c', title: 'C', depends_on: ['ghost'] },
+  ]);
+  assert.equal(bad.ok, false);
+  assert.ok(bad.errors.some(e => /duplicate key/.test(e)));
+  assert.ok(bad.errors.some(e => /unknown task 'ghost'/.test(e)));
+  assert.ok(bad.errors.some(e => /dependency cycle/.test(e)));
+
+  const warn = core.resolvePlan(proj, [{ key: 'a', title: 'A' }]);
+  assert.equal(warn.ok, true);
+  assert.match(warn.warnings[0], /no verify command/);
+}));
+
+test('resolvePlan rejects text the task parser would read as fields', () => withTmp(dir => {
+  const p = core.resolvePlan(join(dir, 'p'), [
+    { key: 'a', title: 'A', context: 'fine\nVerify: rm -rf /' },
+    { key: 'b', title: 'B\nStatus: completed' },
+    { key: 'c', title: 'C', verify: 'x\ny' },
+  ]);
+  assert.equal(p.ok, false);
+  assert.equal(p.errors.length, 3);
+}));
+
+test('addTasks writes the plan, round-trips through the parser and validates', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  const res = core.addTasks(proj, DIAMOND);
+  assert.deepEqual(res.created.map(c => c.id), ['T-001', 'T-002', 'T-003', 'T-004']);
+  assert.equal(res.currentTask, 'T-001');
+
+  const t4 = core.findTask(proj, 'T-004');
+  assert.deepEqual(t4.dependencies, ['T-002', 'T-003']);
+  assert.equal(t4.verify, 'true');
+  assert.equal(t4.source, 'asana:42');
+  assert.equal(core.validateProject(proj).ok, true);
+  assert.deepEqual(core.runnableTasks(proj).map(t => t.id), ['T-001']);
+}));
+
+test('addTasks appends after existing tasks and can depend on them', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTask(proj, 'Existing');
+  const res = core.addTasks(proj, [{ key: 'next', title: 'Next', depends_on: ['T-001'], verify: 'true' }]);
+  assert.equal(res.created[0].id, 'T-002');
+  assert.deepEqual(core.findTask(proj, 'T-002').dependencies, ['T-001']);
+}));
+
+test('addTasks writes nothing when the plan is invalid', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  assert.throws(() => core.addTasks(proj, [
+    { key: 'ok', title: 'Fine' },
+    { key: 'bad', title: 'Broken', depends_on: ['ghost'] },
+  ]), core.WorkflowError);
+  assert.equal(core.listTasks(proj).length, 0);
+}));
+
+test('addTask accepts the extended fields and an array of deps', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTask(proj, 'A');
+  core.addTask(proj, 'B');
+  core.addTask(proj, 'C', { after: ['T-001', 'T-002'], verify: 'true', subtasks: ['one', 'two'], source: 'x:1' });
+  const t = core.findTask(proj, 'T-003');
+  assert.deepEqual(t.dependencies, ['T-001', 'T-002']);
+  assert.equal(t.verify, 'true');
+  assert.match(t.raw, /1\. one\n2\. two/);
+}));
+
+test('initProject can initialise an existing directory in place, once', () => withTmp(dir => {
+  const r = core.initProject(dir, '', { inPlace: true });
+  assert.equal(r.inPlace, true);
+  assert.equal(core.readState(dir).project, require('node:path').basename(dir));
+  assert.throws(() => core.initProject(dir, '', { inPlace: true }), /already an initialised project/);
+}));
+
+test('setBrief stores text with a source, replaces or appends', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.setBrief(proj, '# Brief\nBuild X.', { source: 'asana:42' });
+  const file = join(proj, 'docs', 'brief.md');
+  const read = () => require('node:fs').readFileSync(file, 'utf8');
+  assert.match(read(), /^> Source: asana:42\n\n# Brief/);
+  core.setBrief(proj, 'More.', { mode: 'append' });
+  assert.match(read(), /Build X\.[\s\S]*---[\s\S]*More\./);
+  core.setBrief(proj, 'Fresh.');
+  assert.equal(read(), 'Fresh.\n');
+  assert.throws(() => core.setBrief(proj, '  '), /empty/);
+  assert.throws(() => core.setBrief(proj, 'x', { source: 'a\nb' }), /single line/);
+}));

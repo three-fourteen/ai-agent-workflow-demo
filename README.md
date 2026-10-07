@@ -286,6 +286,22 @@ MCP deliberately omits `--force`: skipping verification is CLI-only. The optiona
 `project` argument must stay inside the directory the server was launched in.
 `release_task` clears a stale lock left by a crashed agent.
 
+#### Starting a project from a brief
+
+The MCP can bootstrap a project from any source. It never fetches the brief
+itself: the agent reads it (a file, Asana, anything) and passes the text in.
+
+1. `init_project` — `name: "."` initialises the served directory, or a new subdirectory.
+2. `set_brief` — stores the brief text in `docs/brief.md` with an opaque `source` ref.
+3. `plan_project` — **dry run**. Validates the proposed tasks and returns resolved ids
+   and parallel `waves`; writes nothing. Works before `init_project`.
+4. `add_tasks` — writes the approved plan atomically (all tasks or none) and echoes
+   every `verify` command so it can be reviewed.
+
+Tasks in a plan reference each other by a local `key`; ids (`T-001`…) are assigned
+on write. Free text may not contain lines starting with `Status:`, `Dependencies:`,
+`Goal:`, `Verify:` or `Source:`, since the task parser would read them as fields.
+
 ```
 agent-workflow mcp                # serve the current project
 ```

@@ -114,3 +114,64 @@ test('release_task clears a stale claim', async () => {
     assert.deepEqual(core.listLocks(proj), []);
   });
 });
+
+const PLAN = [
+  { key: 'setup', title: 'Setup', verify: 'true' },
+  { key: 'feature', title: 'Feature', depends_on: ['setup'], verify: 'true' },
+];
+
+test('init → set_brief → plan_project → add_tasks, in place, then drive the loop', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afw-mcp-init-'));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER, dir] });
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  await client.connect(transport);
+  try {
+    const init = payload(await client.callTool({ name: 'init_project', arguments: { name: '.' } }));
+    assert.equal(init.path, dir);
+
+    await client.callTool({ name: 'set_brief', arguments: { content: '# Brief', source: 'asana:1' } });
+    assert.match(readFileSync(join(dir, 'docs', 'brief.md'), 'utf8'), /Source: asana:1/);
+
+    const plan = payload(await client.callTool({ name: 'plan_project', arguments: { tasks: PLAN } }));
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.waves, [['T-001'], ['T-002']]);
+    assert.equal(core.listTasks(dir).length, 0); // dry run wrote nothing
+
+    const added = payload(await client.callTool({ name: 'add_tasks', arguments: { tasks: PLAN } }));
+    assert.deepEqual(added.created.map(c => c.id), ['T-001', 'T-002']);
+    assert.equal(added.created[0].verify, 'true'); // echoed for approval
+
+    const next = payload(await client.callTool({ name: 'next_tasks', arguments: {} }));
+    assert.deepEqual(next.map(t => t.id), ['T-001']);
+    assert.equal(payload(await client.callTool({ name: 'validate', arguments: {} })).ok, true);
+  } finally {
+    await client.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('plan_project reports errors without throwing; add_tasks refuses an invalid plan', async () => {
+  await withServer(async ({ client, proj }) => {
+    const bad = [{ key: 'a', title: 'A', depends_on: ['ghost'] }];
+    const plan = payload(await client.callTool({ name: 'plan_project', arguments: { tasks: bad } }));
+    assert.equal(plan.ok, false);
+    const res = await client.callTool({ name: 'add_tasks', arguments: { tasks: bad } });
+    assert.equal(res.isError, true);
+    assert.equal(core.listTasks(proj).length, 2); // fixture tasks only
+  });
+});
+
+test('init_project creates a subdirectory but refuses to escape the served dir', async () => {
+  await withServer(async ({ client, proj }) => {
+    const parent = join(proj, '..');
+    const ok = await client.callTool({ name: 'init_project', arguments: { name: 'child' } });
+    assert.notEqual(ok.isError, true);
+    assert.ok(core.isProjectDir(join(proj, 'child')));
+
+    for (const name of ['../escape', '/tmp/afw-escape']) {
+      const res = await client.callTool({ name: 'init_project', arguments: { name } });
+      assert.equal(res.isError, true, name);
+    }
+    assert.equal(core.isProjectDir(join(parent, 'escape')), false);
+  });
+});
