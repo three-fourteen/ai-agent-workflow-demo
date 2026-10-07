@@ -310,6 +310,21 @@ Tasks in a plan reference each other by a local `key`; ids (`T-001`…) are assi
 on write. Free text may not contain lines starting with `Status:`, `Dependencies:`,
 `Goal:`, `Verify:` or `Source:`, since the task parser would read them as fields.
 
+#### Re-planning
+
+Plans change. Tasks that haven't started can be edited without touching files by hand:
+
+- `update_task` — patches only the fields you pass (`title`, `goal`, `context`,
+  `depends_on` as task ids, `subtasks`, `done_criteria`, `verify`, `source`).
+  Everything else in the file is preserved. Changing `title` renames the file.
+  Unknown dependencies and cycles are rejected.
+- `remove_task` — deletes a task nothing else depends on, and repoints
+  `current_task` if needed.
+
+Both refuse tasks that are in-progress, completed, blocked or claimed. Task ids are
+never renumbered: a new task gets the highest existing id + 1, so gaps left by
+removals can't cause collisions.
+
 ```
 agent-workflow mcp                # serve the current project
 ```
