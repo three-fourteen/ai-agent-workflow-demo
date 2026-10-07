@@ -343,6 +343,80 @@ file mutations.
 
 Every tool except `init_project` takes an optional `project` directory.
 
+#### Connecting an agent
+
+The server is a standard stdio MCP server, so any MCP-capable agent can use it. It serves
+the directory it is launched from (the trailing `.`), so a project folder is initialised
+or driven by whichever agent was started inside it. Clone the repo first and use the
+**absolute path** to `cli/mcp_server.js` (replace `/ABSOLUTE/PATH` below).
+
+**Claude Code**
+
+```bash
+claude mcp add agent-workflow -- node /ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js .
+```
+
+By default this registers the server for the current project only, and only for you.
+Add `--scope user` to make it available in every project, or `--scope project` to write a
+shareable `.mcp.json` (the absolute path then has to be valid on every machine).
+Check with `/mcp` inside a session.
+
+**Codex CLI** ([docs](https://developers.openai.com/codex/mcp))
+
+```bash
+codex mcp add agent-workflow -- node /ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js .
+```
+
+Or edit `~/.codex/config.toml` (or `.codex/config.toml` in a trusted project):
+
+```toml
+[mcp_servers.agent-workflow]
+command = "node"
+args = ["/ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js", "."]
+# cwd = "/path/to/project"   # optional: pin the served project
+```
+
+**Antigravity CLI** (`agy`, the Gemini CLI replacement)
+
+```bash
+agy mcp add agent-workflow --type stdio -- node /ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js .
+```
+
+Or add it to `~/.gemini/config/mcp_config.json` (all projects) or `.agents/mcp_config.json`
+(one workspace):
+
+```json
+{
+  "mcpServers": {
+    "agent-workflow": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js", "."]
+    }
+  }
+}
+```
+
+Use `/mcp` in the session to list and manage servers.
+
+> Claude Code is the client this has been exercised with. The Codex and Antigravity
+> snippets follow those tools' documented syntax; flags and file locations change between
+> releases, so check their docs if a command is rejected.
+
+**Tips for any agent**
+
+- **Confirm what is being served.** Ask the agent to call `get_state` and check the project
+  name. If the agent launches the server from a different directory than you expect, pass
+  the absolute project path as the last argument instead of `.` (or set `cwd`).
+- **Restart after updating.** The server reads the code once at startup: `git pull`, then
+  start a new session (or reconnect via `/mcp`).
+- **Give each agent its own name.** Ask it to pass `agent: "codex"` (or `"claude"`, `"agy"`)
+  to `start_task`, so a conflicting claim reads "already claimed by 'codex'". Mixed agents
+  in one folder coordinate through the lock files; for separate copies of the code, use
+  `create_worktree`.
+- **Keep tool approvals on.** `add_tasks` and `complete_task` write files and run commands,
+  so don't blanket-trust the server. A prompt like "show me the plan before writing any
+  tasks" gives a natural approval point after `plan_project`.
+
 MCP deliberately omits `--force`: skipping verification is CLI-only. The optional
 `project` argument must stay inside the directory the server was launched in.
 `release_task` clears a stale lock left by a crashed agent.
