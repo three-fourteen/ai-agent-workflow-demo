@@ -11,6 +11,9 @@ You are in PLANNING mode. Do not implement anything yet.
      agent-workflow task add "<title>" [--after T-00X]
    Use --after to declare dependencies. Then edit each task file to fill in
    Goal, Context, Subtasks, Done Criteria, and a runnable Verify command.
+   If the agent-workflow MCP server is connected, prefer its planning tools:
+   set_brief (store the source brief), plan_project (dry run — shows ids and
+   parallel waves, writes nothing), then add_tasks once the user approves.
 4. Present the task plan to the user.
 5. Run `agent-workflow validate` to confirm the graph is sound.
 

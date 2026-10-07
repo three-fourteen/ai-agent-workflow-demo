@@ -11,6 +11,7 @@
  * Started by `agent-workflow mcp [<project>]`.
  */
 
+const path = require('path');
 const core = require('./core');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
@@ -25,13 +26,39 @@ const PROJECT_PROP = {
     description: 'Project directory (relative to where the server was launched). Defaults to the launch directory.',
   },
 };
+const TASK_SPEC = {
+  type: 'object',
+  required: ['key', 'title'],
+  properties: {
+    key:           { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$', description: 'Plan-local handle, referenced by depends_on.' },
+    title:         { type: 'string', maxLength: 80 },
+    goal:          { type: 'string', description: 'One line. Defaults to the title.' },
+    context:       { type: 'string' },
+    depends_on:    { type: 'array', items: { type: 'string' }, description: 'Plan keys, or existing task ids (e.g. "T-003") when appending.' },
+    subtasks:      { type: 'array', items: { type: 'string' } },
+    done_criteria: { type: 'string' },
+    verify:        { type: 'string', description: 'Shell command run from the project dir; exit 0 means done.' },
+    source:        { type: 'string', description: 'Opaque origin reference, e.g. "asana:1204" or "brief.md#auth".' },
+  },
+};
 const ID_PROP = {
   id: { type: 'string', description: 'Task id, e.g. "T-001".', pattern: '^T-\\d+$' },
 };
 
 /** Build the tool table. `base` is the default project directory. */
 function buildTools(base) {
-  const proj = args => (args && args.project) || base;
+  // Resolve a path and refuse anything outside the launch directory, so an
+  // agent can't point the engine (and its Verify shell commands) at other paths.
+  const root = path.resolve(base);
+  const confine = (p, label) => {
+    const target = path.resolve(root, p);
+    const rel = path.relative(root, target);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new core.WorkflowError(`${label} '${p}' is outside the served directory.`);
+    }
+    return target;
+  };
+  const proj = args => (args && args.project ? confine(args.project, 'project') : base);
 
   return [
     {
@@ -87,17 +114,16 @@ function buildTools(base) {
     },
     {
       name: 'complete_task',
-      description: 'Move a task in-progress → completed. Runs its Verify command first and refuses on failure unless force/no_verify is set.',
+      description: 'Move a task in-progress → completed. Runs its Verify command first and refuses on failure. (Skipping verification with --force is CLI-only.)',
       inputSchema: {
         type: 'object',
         properties: {
           ...PROJECT_PROP, ...ID_PROP,
-          force: { type: 'boolean', description: 'Skip verification.' },
           no_verify: { type: 'boolean', description: 'Complete a task that has no Verify command.' },
         },
         required: ['id'],
       },
-      run: a => core.completeTask(proj(a), a.id, { force: !!a.force, noVerify: !!a.no_verify }),
+      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify }),
     },
     {
       name: 'block_task',
@@ -118,6 +144,91 @@ function buildTools(base) {
       description: 'Return a blocked task to pending.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
       run: a => core.unblockTask(proj(a), a.id),
+    },
+    {
+      name: 'release_task',
+      description: 'Release a task\'s lock (e.g. a stale claim from a crashed agent) without changing its status.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.releaseTask(proj(a), a.id),
+    },
+    {
+      name: 'init_project',
+      description: 'Scaffold a new project. name is a new directory inside the served directory, or "." to initialise the served directory itself.',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string', description: 'New directory name, or "." for in-place.' } },
+        required: ['name'],
+      },
+      run: a => {
+        const inPlace = a.name === '.';
+        const target = inPlace ? base : confine(a.name, 'name');
+        const r = core.initProject(target, '', { inPlace, name: inPlace ? '' : a.name });
+        return { projectName: r.projectName, path: target };
+      },
+    },
+    {
+      name: 'set_brief',
+      description: 'Store the source brief (as text) in docs/brief.md. Pass the content itself, never a path or URL.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP,
+          content: { type: 'string', description: 'The brief as markdown.' },
+          source: { type: 'string', description: 'Where it came from, e.g. "asana:1204". Single line.' },
+          mode: { type: 'string', enum: ['replace', 'append'], description: 'Default replace.' },
+        },
+        required: ['content'],
+      },
+      run: a => core.setBrief(proj(a), a.content, { source: a.source || '', mode: a.mode || 'replace' }),
+    },
+    {
+      name: 'plan_project',
+      description: 'Dry-run a task plan: validates it and returns resolved ids and parallel waves. Writes nothing. Works before init_project.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, tasks: { type: 'array', minItems: 1, items: TASK_SPEC } },
+        required: ['tasks'],
+      },
+      run: a => core.resolvePlan(proj(a), a.tasks),
+    },
+    {
+      name: 'add_tasks',
+      description: 'Write a validated task plan atomically (all tasks or none). Call plan_project first and get the user\'s approval; verify commands are echoed back.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, tasks: { type: 'array', minItems: 1, items: TASK_SPEC } },
+        required: ['tasks'],
+      },
+      run: a => core.addTasks(proj(a), a.tasks),
+    },
+    {
+      name: 'update_task',
+      description: 'Re-plan: edit a pending, unclaimed task in place (title, goal, context, depends_on as task ids, subtasks, done_criteria, verify, source). Only the given fields change.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP, ...ID_PROP,
+          title:         TASK_SPEC.properties.title,
+          goal:          TASK_SPEC.properties.goal,
+          context:       TASK_SPEC.properties.context,
+          depends_on:    { type: 'array', items: { type: 'string', pattern: '^T-\\d+$' }, description: 'Replaces the dependency list with these task ids.' },
+          subtasks:      TASK_SPEC.properties.subtasks,
+          done_criteria: TASK_SPEC.properties.done_criteria,
+          verify:        TASK_SPEC.properties.verify,
+          source:        TASK_SPEC.properties.source,
+        },
+        required: ['id'],
+      },
+      run: a => {
+        const { project, id, ...patch } = a;
+        return core.updateTask(proj(a), id, patch);
+      },
+    },
+    {
+      name: 'remove_task',
+      description: 'Re-plan: delete a pending, unclaimed task that nothing depends on. Its id is retired: ids are never reused or renumbered.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.removeTask(proj(a), a.id),
     },
     {
       name: 'validate',

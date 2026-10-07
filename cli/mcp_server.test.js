@@ -87,3 +87,131 @@ test('validate reports ok for a fresh project', async () => {
     assert.deepEqual(payload(res), { ok: true, errors: [] });
   });
 });
+
+test('complete_task ignores force over MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    const res = await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', force: true } });
+    assert.equal(res.isError, true); // task has no Verify command; force is not honored
+    assert.equal(core.findTask(proj, 'T-001').status, 'in-progress');
+  });
+});
+
+test('project outside the served directory is rejected', async () => {
+  await withServer(async ({ client }) => {
+    const res = await client.callTool({ name: 'get_state', arguments: { project: '../..' } });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /outside the served directory/);
+  });
+});
+
+test('release_task clears a stale claim', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    assert.deepEqual(core.listLocks(proj), ['T-001']);
+    const res = await client.callTool({ name: 'release_task', arguments: { id: 'T-001' } });
+    assert.notEqual(res.isError, true);
+    assert.deepEqual(core.listLocks(proj), []);
+  });
+});
+
+const PLAN = [
+  { key: 'setup', title: 'Setup', verify: 'true' },
+  { key: 'feature', title: 'Feature', depends_on: ['setup'], verify: 'true' },
+];
+
+test('init → set_brief → plan_project → add_tasks, in place, then drive the loop', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afw-mcp-init-'));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER, dir] });
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  await client.connect(transport);
+  try {
+    const init = payload(await client.callTool({ name: 'init_project', arguments: { name: '.' } }));
+    assert.equal(init.path, dir);
+
+    await client.callTool({ name: 'set_brief', arguments: { content: '# Brief', source: 'asana:1' } });
+    assert.match(readFileSync(join(dir, 'docs', 'brief.md'), 'utf8'), /Source: asana:1/);
+
+    const plan = payload(await client.callTool({ name: 'plan_project', arguments: { tasks: PLAN } }));
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.waves, [['T-001'], ['T-002']]);
+    assert.equal(core.listTasks(dir).length, 0); // dry run wrote nothing
+
+    const added = payload(await client.callTool({ name: 'add_tasks', arguments: { tasks: PLAN } }));
+    assert.deepEqual(added.created.map(c => c.id), ['T-001', 'T-002']);
+    assert.equal(added.created[0].verify, 'true'); // echoed for approval
+
+    const next = payload(await client.callTool({ name: 'next_tasks', arguments: {} }));
+    assert.deepEqual(next.map(t => t.id), ['T-001']);
+    assert.equal(payload(await client.callTool({ name: 'validate', arguments: {} })).ok, true);
+  } finally {
+    await client.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('plan_project reports errors without throwing; add_tasks refuses an invalid plan', async () => {
+  await withServer(async ({ client, proj }) => {
+    const bad = [{ key: 'a', title: 'A', depends_on: ['ghost'] }];
+    const plan = payload(await client.callTool({ name: 'plan_project', arguments: { tasks: bad } }));
+    assert.equal(plan.ok, false);
+    const res = await client.callTool({ name: 'add_tasks', arguments: { tasks: bad } });
+    assert.equal(res.isError, true);
+    assert.equal(core.listTasks(proj).length, 2); // fixture tasks only
+  });
+});
+
+test('init_project creates a subdirectory but refuses to escape the served dir', async () => {
+  await withServer(async ({ client, proj }) => {
+    const parent = join(proj, '..');
+    const ok = await client.callTool({ name: 'init_project', arguments: { name: 'child' } });
+    assert.notEqual(ok.isError, true);
+    assert.ok(core.isProjectDir(join(proj, 'child')));
+
+    for (const name of ['../escape', '/tmp/afw-escape']) {
+      const res = await client.callTool({ name: 'init_project', arguments: { name } });
+      assert.equal(res.isError, true, name);
+    }
+    assert.equal(core.isProjectDir(join(parent, 'escape')), false);
+  });
+});
+
+test('update_task and remove_task re-plan over MCP, and refuse started tasks', async () => {
+  await withServer(async ({ client, proj }) => {
+    const upd = await client.callTool({ name: 'update_task', arguments: { id: 'T-002', verify: 'true', goal: 'Sharper goal' } });
+    assert.notEqual(upd.isError, true);
+    assert.equal(core.findTask(proj, 'T-002').goal, 'Sharper goal');
+
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    const blocked = await client.callTool({ name: 'update_task', arguments: { id: 'T-001', goal: 'x' } });
+    assert.equal(blocked.isError, true);
+
+    const dep = await client.callTool({ name: 'remove_task', arguments: { id: 'T-001' } });
+    assert.equal(dep.isError, true);
+
+    const rm = await client.callTool({ name: 'remove_task', arguments: { id: 'T-002' } });
+    assert.equal(payload(rm).removed, true);
+    assert.equal(core.listTasks(proj).length, 1);
+  });
+});
+
+test('removed task ids stay retired over MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'remove_task', arguments: { id: 'T-002' } });
+    const added = payload(await client.callTool({
+      name: 'add_tasks', arguments: { tasks: [{ key: 'again', title: 'Again', verify: 'true' }] },
+    }));
+    assert.equal(added.created[0].id, 'T-003'); // T-002 stays retired
+    assert.equal(core.readState(proj).max_task_id, 3);
+  });
+});
+
+test('start_task on a completed task says so', async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', no_verify: true } });
+    const res = await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /already completed/);
+  });
+});

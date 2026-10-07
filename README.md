@@ -68,6 +68,14 @@ Tasks include:
 - fake authentication
 - user dashboard
 
+### bookmarks
+
+A working zero-dependency CLI bookmark manager, built **end to end through the MCP
+tools** starting from `bookmarks/brief.md`: `init_project` (in place) → `set_brief` →
+`plan_project` → `add_tasks` → `start_task` / `complete_task` with real `Verify:`
+commands. It also shows mid-run re-planning (`remove_task`, `add_tasks`, `update_task`).
+Unlike the other demos it contains real code: `cd bookmarks && npm test`.
+
 Each project contains:
 
 ```
@@ -135,6 +143,37 @@ npx github:three-fourteen/ai-agent-workflow-demo init my-project
 npm install -g github:three-fourteen/ai-agent-workflow-demo
 agent-workflow --help
 afw --help
+```
+
+### Option C — clone and link (works on any npm version)
+
+```bash
+git clone https://github.com/three-fourteen/ai-agent-workflow-demo
+cd ai-agent-workflow-demo && npm install && npm link
+agent-workflow --help
+```
+
+### Troubleshooting: `EALLOWGIT`
+
+```
+npm error code EALLOWGIT
+npm error Fetching packages of type "git" have been disabled
+```
+
+npm 12 and later refuse git-hosted packages (`github:…`) by default
+([`allow-git`](https://docs.npmjs.com/cli/v12/using-npm/config)). Either use Option C,
+or opt in for a single command:
+
+```bash
+npm install -g github:three-fourteen/ai-agent-workflow-demo --allow-git=all
+npx --allow-git=all github:three-fourteen/ai-agent-workflow-demo init my-project
+# or: NPM_CONFIG_ALLOW_GIT=all npx github:three-fourteen/ai-agent-workflow-demo init my-project
+```
+
+The MCP server needs a local checkout either way, so register it with an absolute path:
+
+```bash
+claude mcp add agent-workflow -- node /ABSOLUTE/PATH/ai-agent-workflow-demo/cli/mcp_server.js .
 ```
 
 ### Uninstall
@@ -279,8 +318,65 @@ agent-workflow validate
 ### mcp
 
 Starts a Model Context Protocol server over stdio, exposing the workflow as typed
-tools (`next_tasks`, `start_task`, `complete_task`, `validate`, …). Git stays the
-source of truth; MCP is just a typed interface over the same file mutations.
+tools. Git stays the source of truth; MCP is just a typed interface over the same
+file mutations.
+
+| Group | Tool | What it does |
+|---|---|---|
+| Read | `get_state` | Read `PROJECT_STATE.json` |
+| | `list_tasks` | All tasks with status, dependencies and verify command |
+| | `get_task` | One task, including its raw file |
+| | `next_tasks` | Runnable tasks: pending, dependencies done, unclaimed (`all=false` for just the first) |
+| | `validate` | Check the state file and task graph → `{ ok, errors }` |
+| Execute | `start_task` | Claim a task (atomic lock) and move it `pending → in-progress` |
+| | `verify_task` | Run a task's `Verify:` command without changing status |
+| | `complete_task` | Run `Verify:` first, then `in-progress → completed`; refuses on failure |
+| | `block_task` / `unblock_task` | Mark a task blocked with a reason, or return it to pending |
+| | `release_task` | Clear a stale lock without changing status |
+| Bootstrap | `init_project` | Scaffold a project (`name: "."` for in place) |
+| | `set_brief` | Store the source brief text in `docs/brief.md` |
+| | `plan_project` | Dry-run a task plan; returns resolved ids and parallel `waves`, writes nothing |
+| | `add_tasks` | Write an approved plan atomically (all tasks or none) |
+| Re-plan | `update_task` | Edit a pending, unclaimed task in place |
+| | `remove_task` | Delete a pending, unclaimed task nothing depends on |
+
+Every tool except `init_project` takes an optional `project` directory.
+
+MCP deliberately omits `--force`: skipping verification is CLI-only. The optional
+`project` argument must stay inside the directory the server was launched in.
+`release_task` clears a stale lock left by a crashed agent.
+
+#### Starting a project from a brief
+
+The MCP can bootstrap a project from any source. It never fetches the brief
+itself: the agent reads it (a file, Asana, anything) and passes the text in.
+
+1. `init_project` — `name: "."` initialises the served directory, or a new subdirectory.
+2. `set_brief` — stores the brief text in `docs/brief.md` with an opaque `source` ref.
+3. `plan_project` — **dry run**. Validates the proposed tasks and returns resolved ids
+   and parallel `waves`; writes nothing. Works before `init_project`.
+4. `add_tasks` — writes the approved plan atomically (all tasks or none) and echoes
+   every `verify` command so it can be reviewed.
+
+Tasks in a plan reference each other by a local `key`; ids (`T-001`…) are assigned
+on write. Free text may not contain lines starting with `Status:`, `Dependencies:`,
+`Goal:`, `Verify:` or `Source:`, since the task parser would read them as fields.
+
+#### Re-planning
+
+Plans change. Tasks that haven't started can be edited without touching files by hand:
+
+- `update_task` — patches only the fields you pass (`title`, `goal`, `context`,
+  `depends_on` as task ids, `subtasks`, `done_criteria`, `verify`, `source`).
+  Everything else in the file is preserved. Changing `title` renames the file.
+  Unknown dependencies and cycles are rejected.
+- `remove_task` — deletes a task nothing else depends on, and repoints
+  `current_task` if needed.
+
+Both refuse tasks that are in-progress, completed, blocked or claimed. Task ids are
+never renumbered or reused: `PROJECT_STATE.json` keeps a `max_task_id` high-water mark,
+so a removed task's id stays retired and references to it (commits, `Source:` notes)
+can't silently point at a different task.
 
 ```
 agent-workflow mcp                # serve the current project
@@ -386,7 +482,8 @@ ai-agent-workflow-demo
 │
 ├─ social-feed/
 ├─ dashboard/
-└─ mini-saas/
+├─ mini-saas/
+└─ bookmarks/            # built end to end via the MCP (has real code + tests)
 ```
 
 Each project is independent and demonstrates the same AI workflow pattern.

@@ -23,6 +23,9 @@ You are in PLANNING mode. Do not implement anything yet.
      agent-workflow task add "<title>" [--after T-00X]
    Use --after to declare dependencies. Then edit each task file to fill in
    Goal, Context, Subtasks, Done Criteria, and a runnable Verify command.
+   If the agent-workflow MCP server is connected, prefer its planning tools:
+   set_brief (store the source brief), plan_project (dry run — shows ids and
+   parallel waves, writes nothing), then add_tasks once the user approves.
 4. Present the task plan to the user.
 5. Run \`agent-workflow validate\` to confirm the graph is sound.
 
@@ -49,6 +52,10 @@ You are in EXECUTION mode.
                   agent-workflow task block <id> --reason "..." --strategy "..."
 7. Summarize what you implemented.
 8. Follow the mode instruction from the command output above.
+
+If the agent-workflow MCP server is connected (and the CLI is not on your PATH),
+use its tools instead of the commands above: get_state, next_tasks, start_task
+(pass a distinct \`agent\` name), complete_task, block_task, validate.
 
 Run \`agent-workflow validate\` before finishing. Focus on the current task only.
 `;
