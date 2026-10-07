@@ -828,18 +828,19 @@ function startTask(project, taskId, { agent = 'agent' } = {}) {
 }
 
 /**
- * Run a task's `Verify:` command in the project dir. Returns
+ * Run a task's `Verify:` command in the project dir (or, with `workdir`, in the
+ * matching directory of a registered git worktree). Returns
  * { ran, ok, command, code, stdout?, stderr? }. `inherit` streams the child's
  * output to this process (used by the CLI); otherwise output is captured.
  */
-function verifyTask(project, taskId, { inherit = false } = {}) {
+function verifyTask(project, taskId, { inherit = false, workdir = '' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
   const command = task.verify;
   if (!command) return { ran: false, ok: false, command: '', code: null };
 
   const res = spawnSync(command, {
-    cwd: project,
+    cwd: workdir ? resolveWorkdir(project, workdir) : project,
     shell: true,
     encoding: 'utf8',
     stdio: inherit ? 'inherit' : 'pipe',
@@ -860,7 +861,7 @@ function verifyTask(project, taskId, { inherit = false } = {}) {
  * complete on failure. `force` skips verification; `noVerify` completes a task
  * that has no Verify command. Advances current_task to the next runnable task.
  */
-function completeTask(project, taskId, { force = false, noVerify = false, inherit = false } = {}) {
+function completeTask(project, taskId, { force = false, noVerify = false, inherit = false, workdir = '' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
   assertTransition(task.status, 'completed');
@@ -872,7 +873,7 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
         `${task.id} has no Verify command. Add a \`Verify:\` line to the task, ` +
         `or pass --no-verify (accept without a check) or --force.`);
     }
-    const v = verifyTask(project, task.id, { inherit });
+    const v = verifyTask(project, task.id, { inherit, workdir });
     if (!v.ok) {
       throw new WorkflowError(
         `verification failed for ${task.id} (exit ${v.code}). Not completed.`,
@@ -974,6 +975,7 @@ function worktreePlan(task) {
 function createWorktree(project, taskId) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
+  if (task.status === 'completed') throw new WorkflowError(`${task.id} is already completed.`);
   const plan = worktreePlan(task);
 
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: project, encoding: 'utf8' });
@@ -991,6 +993,35 @@ function createWorktree(project, taskId) {
     throw new WorkflowError(`git worktree add failed: ${(res.stderr || res.stdout || '').trim()}`);
   }
   return { branch: plan.branch, path: wtPath };
+}
+
+function git(cwd, ...args) {
+  return spawnSync('git', args, { cwd, encoding: 'utf8' });
+}
+
+/**
+ * Map the project directory into one of this repository's registered git
+ * worktrees, so a task's Verify command can run against code that lives on its
+ * task branch. Only paths git itself lists as worktrees are accepted.
+ */
+function resolveWorkdir(project, workdir) {
+  const top = git(project, 'rev-parse', '--show-toplevel');
+  if (top.status !== 0) throw new WorkflowError(`not a git repository: ${(top.stderr || '').trim()}`);
+  const list = git(project, 'worktree', 'list', '--porcelain');
+  if (list.status !== 0) throw new WorkflowError(`git worktree list failed: ${(list.stderr || '').trim()}`);
+
+  const real = p => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const target = real(workdir);
+  const root = list.stdout.split(/\r?\n/)
+    .filter(l => l.startsWith('worktree '))
+    .map(l => real(l.slice('worktree '.length)))
+    .find(r => r === target);
+  if (!root) throw new WorkflowError(`'${workdir}' is not a registered git worktree of this repository.`);
+
+  const rel = path.relative(real(top.stdout.trim()), real(project));
+  const dir = path.join(root, rel);
+  if (!fs.existsSync(dir)) throw new WorkflowError(`'${dir}' does not exist in that worktree (is the project committed on its branch?).`);
+  return dir;
 }
 
 // ---------------------------------------------------------------------------

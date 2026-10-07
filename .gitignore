@@ -2,3 +2,36 @@ node_modules/
 
 # Per-project runtime lock files (also ignored by each project's .ai/.gitignore)
 .ai/locks/
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs, npm artifacts and coverage
+*.log
+npm-debug.log*
+*.tgz
+coverage/
+.nyc_output/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Per-user agent settings (shared config such as .mcp.json is intentionally NOT ignored)
+.claude/settings.local.json

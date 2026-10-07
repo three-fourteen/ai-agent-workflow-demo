@@ -215,3 +215,36 @@ test('start_task on a completed task says so', async () => {
     assert.match(res.content[0].text, /already completed/);
   });
 });
+
+test('create_worktree + workdir: verify runs against the task branch', async () => {
+  const { spawnSync } = require('node:child_process');
+  const { mkdirSync, writeFileSync } = require('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'afw-mcp-wt-'));
+  const repo = join(dir, 'repo');
+  const proj = join(repo, 'app');
+  mkdirSync(repo, { recursive: true });
+  const git = (...a) => assert.equal(spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: repo }).status, 0);
+  git('init', '-q', '-b', 'main');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'Feature A', verify: 'test -f marker.txt' }]);
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [SERVER, proj] }));
+  try {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001', agent: 'codex' } });
+    const wt = payload(await client.callTool({ name: 'create_worktree', arguments: { id: 'T-001' } }));
+    assert.equal(wt.branch, 'task/T-001-feature-a');
+    writeFileSync(join(wt.path, 'app', 'marker.txt'), 'x');
+
+    const wrong = payload(await client.callTool({ name: 'verify_task', arguments: { id: 'T-001' } }));
+    assert.equal(wrong.ok, false);
+    const bad = await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', workdir: dir } });
+    assert.equal(bad.isError, true);
+    const done = payload(await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', workdir: wt.path } }));
+    assert.equal(done.verified, true);
+  } finally {
+    await client.close();
+    rmSync(dir, { recursive: true });
+  }
+});
