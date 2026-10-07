@@ -194,3 +194,24 @@ test('update_task and remove_task re-plan over MCP, and refuse started tasks', a
     assert.equal(core.listTasks(proj).length, 1);
   });
 });
+
+test('removed task ids stay retired over MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'remove_task', arguments: { id: 'T-002' } });
+    const added = payload(await client.callTool({
+      name: 'add_tasks', arguments: { tasks: [{ key: 'again', title: 'Again', verify: 'true' }] },
+    }));
+    assert.equal(added.created[0].id, 'T-003'); // T-002 stays retired
+    assert.equal(core.readState(proj).max_task_id, 3);
+  });
+});
+
+test('start_task on a completed task says so', async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', no_verify: true } });
+    const res = await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /already completed/);
+  });
+});

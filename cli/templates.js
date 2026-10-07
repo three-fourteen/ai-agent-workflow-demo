@@ -53,6 +53,10 @@ You are in EXECUTION mode.
 7. Summarize what you implemented.
 8. Follow the mode instruction from the command output above.
 
+If the agent-workflow MCP server is connected (and the CLI is not on your PATH),
+use its tools instead of the commands above: get_state, next_tasks, start_task
+(pass a distinct \`agent\` name), complete_task, block_task, validate.
+
 Run \`agent-workflow validate\` before finishing. Focus on the current task only.
 `;
 

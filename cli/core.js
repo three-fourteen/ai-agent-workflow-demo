@@ -77,13 +77,24 @@ function countTasks(projectDir) {
   return listTaskFiles(projectDir).length;
 }
 
-/** Next free task number: highest existing id + 1, so gaps never cause collisions. */
+/**
+ * Next free task number: one past the highest id that ever existed. The state's
+ * `max_task_id` high-water mark retires ids of removed tasks; file names cover
+ * hand-created tasks and projects that predate the field.
+ */
 function nextTaskId(projectDir) {
   const nums = listTaskFiles(projectDir)
     .map(f => /^T-(\d+)/.exec(f))
     .filter(Boolean)
     .map(m => parseInt(m[1], 10));
-  return (nums.length ? Math.max(...nums) : 0) + 1;
+  let high = 0;
+  try { high = Number(readState(projectDir).max_task_id) || 0; } catch { /* not initialised yet */ }
+  return Math.max(high, ...nums, 0) + 1;
+}
+
+/** Raise the state's retired-id high-water mark to at least `n`. */
+function noteTaskId(state, n) {
+  if (!(state.max_task_id >= n)) state.max_task_id = n;
 }
 
 function taskIdFromFilename(filename) {
@@ -270,12 +281,13 @@ function addTask(project, title, {
   }), 'utf8');
 
   const state = readState(project);
+  noteTaskId(state, n);
   let setCurrent = false;
   if (!state.current_task) {
     state.current_task = taskId;
-    writeState(project, state);
     setCurrent = true;
   }
+  writeState(project, state);
   return { taskId, taskPath, setCurrent };
 }
 
@@ -462,12 +474,13 @@ function addTasks(project, specs) {
   }
 
   const state = readState(project);
+  noteTaskId(state, Math.max(...plan.resolved.map(r => parseInt(r.id.slice(2), 10))));
   let currentTask = state.current_task || null;
   if (!currentTask) {
     currentTask = plan.waves[0][0];
     state.current_task = currentTask;
-    writeState(project, state);
   }
+  writeState(project, state);
   return {
     created: files.map(f => ({ key: f.r.key, id: f.r.id, file: f.file, verify: f.r.verify })),
     currentTask,
@@ -600,7 +613,7 @@ function updateTask(project, taskId, patch = {}) {
 
 /**
  * Delete a pending task. Refuses while other tasks depend on it (update or
- * remove those first). Ids are never reused or renumbered.
+ * remove those first). Its id is retired: never reused, never renumbered.
  */
 function removeTask(project, taskId) {
   requireProjectDir(project);
@@ -614,10 +627,11 @@ function removeTask(project, taskId) {
 
   fs.unlinkSync(path.join(tasksDir(project), task.file));
   const state = readState(project);
+  noteTaskId(state, Math.max(parseInt(task.id.slice(2), 10), nextTaskId(project) - 1)); // retire the id
   if (state.current_task === task.id) {
     state.current_task = selectNextTask(project, state);
-    writeState(project, state);
   }
+  writeState(project, state);
   return { taskId: task.id, removed: true, currentTask: state.current_task };
 }
 
@@ -790,6 +804,9 @@ function removeId(arr, id) {
 function startTask(project, taskId, { agent = 'agent' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
+  if (task.status === 'completed') {
+    throw new WorkflowError(`${task.id} is already completed. Use next_tasks / \`agent-workflow next\` to find runnable work.`);
+  }
   if (task.status === 'in-progress') {
     const held = readLock(project, task.id);
     if (held) throw new WorkflowError(`${task.id} is already in progress, claimed by '${held.agent}'.`);
@@ -1004,6 +1021,8 @@ function validateProject(project) {
     errors.push('in_progress must be an array');
   if ('unverified' in state && !isArr(state.unverified))
     errors.push('unverified must be an array');
+  if ('max_task_id' in state && !Number.isInteger(state.max_task_id))
+    errors.push('max_task_id must be an integer');
 
   const tasks = listTasks(project);
   const ids = new Set(tasks.map(t => t.id));

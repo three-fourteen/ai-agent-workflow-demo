@@ -203,7 +203,7 @@ test('completed is terminal — cannot restart', () => withTmp(dir => {
   const proj = twoTaskProject(dir);
   core.startTask(proj, 'T-001');
   core.completeTask(proj, 'T-001', { noVerify: true });
-  assert.throws(() => core.startTask(proj, 'T-001'), /illegal transition completed/);
+  assert.throws(() => core.startTask(proj, 'T-001'), /already completed/);
 }));
 
 // ---------------------------------------------------------------------------
@@ -503,13 +503,42 @@ test('new task ids skip past gaps instead of colliding', () => withTmp(dir => {
   const proj = join(dir, 'proj');
   core.initProject(proj, '');
   core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B' }, { key: 'c', title: 'C' }]);
-  core.removeTask(proj, 'T-003'); // ids 1,2 remain
-  require('node:fs').unlinkSync(join(proj, 'tasks', core.findTask(proj, 'T-001').file)); // gap: only T-002 left
+  require('node:fs').unlinkSync(join(proj, 'tasks', core.findTask(proj, 'T-002').file)); // hand-deleted: gap in the middle
+  assert.equal(core.nextTaskId(proj), 4);
+  assert.equal(core.addTask(proj, 'D').taskId, 'T-004');
+  assert.equal(core.resolvePlan(proj, [{ key: 'e', title: 'E' }]).resolved[0].id, 'T-005');
+}));
+
+test('a removed task id is retired, even the newest one', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B' }]);
+  core.removeTask(proj, 'T-002');
+  assert.equal(core.readState(proj).max_task_id, 2);
   assert.equal(core.nextTaskId(proj), 3);
-  const { taskId } = core.addTask(proj, 'D');
-  assert.equal(taskId, 'T-003');
-  const plan = core.resolvePlan(proj, [{ key: 'e', title: 'E' }]);
-  assert.equal(plan.resolved[0].id, 'T-004');
+  assert.equal(core.addTask(proj, 'C').taskId, 'T-003');
+  assert.equal(core.addTasks(proj, [{ key: 'd', title: 'D' }]).created[0].id, 'T-004');
+  assert.equal(core.validateProject(proj).ok, true);
+}));
+
+test('removing the newest task retires its id on projects without max_task_id', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B' }]);
+  const state = core.readState(proj);
+  delete state.max_task_id; // simulate a project created before the field existed
+  core.writeState(proj, state);
+  core.removeTask(proj, 'T-002');
+  assert.equal(core.addTask(proj, 'C').taskId, 'T-003');
+}));
+
+test('starting a completed task explains it and points to next', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'true' }]);
+  core.startTask(proj, 'T-001');
+  core.completeTask(proj, 'T-001');
+  assert.throws(() => core.startTask(proj, 'T-001'), /already completed.*next/);
 }));
 
 test('updateTask edits fields in place and keeps hand-written content', () => withTmp(dir => {

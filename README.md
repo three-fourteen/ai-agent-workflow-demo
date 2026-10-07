@@ -374,8 +374,9 @@ Plans change. Tasks that haven't started can be edited without touching files by
   `current_task` if needed.
 
 Both refuse tasks that are in-progress, completed, blocked or claimed. Task ids are
-never renumbered: a new task gets the highest existing id + 1, so gaps left by
-removals can't cause collisions.
+never renumbered or reused: `PROJECT_STATE.json` keeps a `max_task_id` high-water mark,
+so a removed task's id stays retired and references to it (commits, `Source:` notes)
+can't silently point at a different task.
 
 ```
 agent-workflow mcp                # serve the current project

@@ -13,7 +13,7 @@ Planned and executed entirely through the agent-workflow MCP tools, starting fro
 `start_task` / `complete_task` with real `Verify:` commands.
 
 Mid-run re-planning: the README task was dropped with `remove_task`, a persistence task was
-added with `add_tasks` (reusing the freed id), and the CLI task was re-pointed at it with
+added with `add_tasks`, and the CLI task was re-pointed at it with
 `update_task`. A cycle-creating `update_task` was rejected.
 
 ## Key decisions

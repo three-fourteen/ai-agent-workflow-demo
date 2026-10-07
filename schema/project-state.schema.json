@@ -39,6 +39,11 @@
       "items": { "type": "string", "pattern": "^T-\\d+$" },
       "description": "Task ids completed without a passing Verify check (--force / --no-verify)."
     },
+    "max_task_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Highest task number ever issued. Retires ids of removed tasks so they are never reused."
+    },
     "description": {
       "type": "string"
     },

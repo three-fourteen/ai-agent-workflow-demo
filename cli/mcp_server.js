@@ -226,7 +226,7 @@ function buildTools(base) {
     },
     {
       name: 'remove_task',
-      description: 'Re-plan: delete a pending, unclaimed task that nothing depends on. Ids are never renumbered.',
+      description: 'Re-plan: delete a pending, unclaimed task that nothing depends on. Its id is retired: ids are never reused or renumbered.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
       run: a => core.removeTask(proj(a), a.id),
     },
