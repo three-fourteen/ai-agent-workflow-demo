@@ -790,6 +790,10 @@ function removeId(arr, id) {
 function startTask(project, taskId, { agent = 'agent' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
+  if (task.status === 'in-progress') {
+    const held = readLock(project, task.id);
+    if (held) throw new WorkflowError(`${task.id} is already in progress, claimed by '${held.agent}'.`);
+  }
   assertTransition(task.status, 'in-progress');
 
   acquireLock(project, task.id, agent); // throws if another agent holds it

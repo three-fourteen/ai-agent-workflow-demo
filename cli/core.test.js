@@ -586,3 +586,11 @@ test('removeTask refuses tasks others depend on and repoints current_task', () =
   assert.equal(core.readState(proj).current_task, 'T-003');
   assert.equal(core.validateProject(proj).ok, true);
 }));
+
+test('starting a task another agent already holds names the holder', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTask(proj, 'Only');
+  core.startTask(proj, 'T-001', { agent: 'agent-a' });
+  assert.throws(() => core.startTask(proj, 'T-001', { agent: 'agent-b' }), /claimed by 'agent-a'/);
+}));

@@ -1,0 +1,14 @@
+{
+  "project": "bookmarks",
+  "phase": "completed",
+  "current_task": null,
+  "blocked": false,
+  "completed_tasks": [
+    "T-001",
+    "T-002",
+    "T-003",
+    "T-005",
+    "T-004"
+  ],
+  "in_progress": []
+}

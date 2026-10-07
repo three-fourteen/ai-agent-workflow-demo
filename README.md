@@ -68,6 +68,14 @@ Tasks include:
 - fake authentication
 - user dashboard
 
+### bookmarks
+
+A working zero-dependency CLI bookmark manager, built **end to end through the MCP
+tools** starting from `bookmarks/brief.md`: `init_project` (in place) → `set_brief` →
+`plan_project` → `add_tasks` → `start_task` / `complete_task` with real `Verify:`
+commands. It also shows mid-run re-planning (`remove_task`, `add_tasks`, `update_task`).
+Unlike the other demos it contains real code: `cd bookmarks && npm test`.
+
 Each project contains:
 
 ```
@@ -406,7 +414,8 @@ ai-agent-workflow-demo
 │
 ├─ social-feed/
 ├─ dashboard/
-└─ mini-saas/
+├─ mini-saas/
+└─ bookmarks/            # built end to end via the MCP (has real code + tests)
 ```
 
 Each project is independent and demonstrates the same AI workflow pattern.

@@ -1,0 +1,4 @@
+{
+  "mode": "placeholder",
+  "notes": "Reserved for future optimization. Hybrid mode scans /tasks when current_task is missing."
+}
