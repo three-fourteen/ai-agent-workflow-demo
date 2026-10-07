@@ -329,10 +329,11 @@ file mutations.
 | | `next_tasks` | Runnable tasks: pending, dependencies done, unclaimed (`all=false` for just the first) |
 | | `validate` | Check the state file and task graph → `{ ok, errors }` |
 | Execute | `start_task` | Claim a task (atomic lock) and move it `pending → in-progress` |
-| | `verify_task` | Run a task's `Verify:` command without changing status |
-| | `complete_task` | Run `Verify:` first, then `in-progress → completed`; refuses on failure |
+| | `verify_task` | Run a task's `Verify:` command without changing status (optional `workdir`) |
+| | `complete_task` | Run `Verify:` first, then `in-progress → completed`; refuses on failure (optional `workdir`) |
 | | `block_task` / `unblock_task` | Mark a task blocked with a reason, or return it to pending |
 | | `release_task` | Clear a stale lock without changing status |
+| | `create_worktree` | Isolate a task on its own git worktree and branch (see below) |
 | Bootstrap | `init_project` | Scaffold a project (`name: "."` for in place) |
 | | `set_brief` | Store the source brief text in `docs/brief.md` |
 | | `plan_project` | Dry-run a task plan; returns resolved ids and parallel `waves`, writes nothing |
@@ -345,6 +346,24 @@ Every tool except `init_project` takes an optional `project` directory.
 MCP deliberately omits `--force`: skipping verification is CLI-only. The optional
 `project` argument must stay inside the directory the server was launched in.
 `release_task` clears a stale lock left by a crashed agent.
+
+#### Parallel agents in git worktrees
+
+Locks stop two agents claiming the same task, but not editing the same files. To give
+each agent its own copy of the code:
+
+1. `start_task` — claim it (pass your own `agent` name, e.g. `codex`).
+2. `create_worktree` — creates `task/<id>-<slug>` in a worktree beside the repo and
+   returns its `path`.
+3. Edit and commit **code** in that worktree.
+4. Keep making **state** changes (`complete_task`, `block_task`, …) through the MCP
+   tools. The server serves the main checkout, so state and locks stay in one place.
+5. Pass the worktree `path` as `workdir` to `verify_task` / `complete_task`, so the
+   `Verify:` command runs against the branch instead of the main checkout.
+
+`workdir` is only accepted if git lists it as a worktree of the same repository, and the
+command runs in the same sub-path as the project (so projects in a subdirectory work).
+Merging the branch and removing the worktree (`git worktree remove`) is left to you.
 
 #### Starting a project from a brief
 

@@ -623,3 +623,57 @@ test('starting a task another agent already holds names the holder', () => withT
   core.startTask(proj, 'T-001', { agent: 'agent-a' });
   assert.throws(() => core.startTask(proj, 'T-001', { agent: 'agent-b' }), /claimed by 'agent-a'/);
 }));
+
+// ---------------------------------------------------------------------------
+// Worktrees — verify against the task branch
+// ---------------------------------------------------------------------------
+
+const { spawnSync } = require('node:child_process');
+
+/** A git repo whose project lives in the `app/` subdirectory, committed on main. */
+function gitProject(dir) {
+  const repo = join(dir, 'repo');
+  const proj = join(repo, 'app');
+  mkdirSync(repo, { recursive: true });
+  const git = (...a) => {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: repo, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  git('init', '-q', '-b', 'main');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'Feature A', verify: 'test -f marker.txt' }]);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'init');
+  return { repo, proj };
+}
+
+test('verify with workdir runs in the matching directory of a registered worktree', () => withTmp(dir => {
+  const { proj } = gitProject(dir);
+  core.startTask(proj, 'T-001');
+  const wt = core.createWorktree(proj, 'T-001');
+  assert.equal(wt.branch, 'task/T-001-feature-a');
+
+  writeFileSync(join(wt.path, 'app', 'marker.txt'), 'x'); // the "work", only on the branch
+  assert.equal(core.verifyTask(proj, 'T-001').ok, false);                       // main checkout: missing
+  assert.equal(core.verifyTask(proj, 'T-001', { workdir: wt.path }).ok, true);  // worktree: present
+
+  const done = core.completeTask(proj, 'T-001', { workdir: wt.path });
+  assert.equal(done.verified, true);
+  assert.equal(core.findTask(proj, 'T-001').status, 'completed');
+}));
+
+test('workdir must be a registered worktree of the same repo', () => withTmp(dir => {
+  const { proj } = gitProject(dir);
+  const elsewhere = join(dir, 'elsewhere');
+  mkdirSync(join(elsewhere, 'app'), { recursive: true });
+  writeFileSync(join(elsewhere, 'app', 'marker.txt'), 'x');
+  assert.throws(() => core.verifyTask(proj, 'T-001', { workdir: elsewhere }), /not a registered git worktree/);
+  assert.throws(() => core.verifyTask(proj, 'T-001', { workdir: '/' }), /not a registered git worktree/);
+}));
+
+test('createWorktree refuses a completed task', () => withTmp(dir => {
+  const { proj } = gitProject(dir);
+  core.startTask(proj, 'T-001');
+  core.completeTask(proj, 'T-001', { noVerify: true });
+  assert.throws(() => core.createWorktree(proj, 'T-001'), /already completed/);
+}));

@@ -41,6 +41,12 @@ const TASK_SPEC = {
     source:        { type: 'string', description: 'Opaque origin reference, e.g. "asana:1204" or "brief.md#auth".' },
   },
 };
+const WORKDIR_PROP = {
+  workdir: {
+    type: 'string',
+    description: 'Path of a git worktree created with create_worktree. Runs the Verify command there instead of in the main checkout.',
+  },
+};
 const ID_PROP = {
   id: { type: 'string', description: 'Task id, e.g. "T-001".', pattern: '^T-\\d+$' },
 };
@@ -109,8 +115,8 @@ function buildTools(base) {
     {
       name: 'verify_task',
       description: 'Run a task\'s Verify command without changing its status.',
-      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
-      run: a => core.verifyTask(proj(a), a.id),
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP }, required: ['id'] },
+      run: a => core.verifyTask(proj(a), a.id, { workdir: a.workdir || '' }),
     },
     {
       name: 'complete_task',
@@ -118,12 +124,12 @@ function buildTools(base) {
       inputSchema: {
         type: 'object',
         properties: {
-          ...PROJECT_PROP, ...ID_PROP,
+          ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP,
           no_verify: { type: 'boolean', description: 'Complete a task that has no Verify command.' },
         },
         required: ['id'],
       },
-      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify }),
+      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify, workdir: a.workdir || '' }),
     },
     {
       name: 'block_task',
@@ -150,6 +156,12 @@ function buildTools(base) {
       description: 'Release a task\'s lock (e.g. a stale claim from a crashed agent) without changing its status.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
       run: a => core.releaseTask(proj(a), a.id),
+    },
+    {
+      name: 'create_worktree',
+      description: 'Isolate a task for parallel work: creates a git worktree on branch task/<id>-<slug>, placed beside the repository. Edit and commit code there; keep making state changes (start/complete/block) through these tools, and pass the returned path as workdir to verify_task / complete_task so Verify runs against the branch.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.createWorktree(proj(a), a.id),
     },
     {
       name: 'init_project',
