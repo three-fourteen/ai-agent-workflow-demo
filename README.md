@@ -287,8 +287,29 @@ agent-workflow validate
 ### mcp
 
 Starts a Model Context Protocol server over stdio, exposing the workflow as typed
-tools (`next_tasks`, `start_task`, `complete_task`, `validate`, …). Git stays the
-source of truth; MCP is just a typed interface over the same file mutations.
+tools. Git stays the source of truth; MCP is just a typed interface over the same
+file mutations.
+
+| Group | Tool | What it does |
+|---|---|---|
+| Read | `get_state` | Read `PROJECT_STATE.json` |
+| | `list_tasks` | All tasks with status, dependencies and verify command |
+| | `get_task` | One task, including its raw file |
+| | `next_tasks` | Runnable tasks: pending, dependencies done, unclaimed (`all=false` for just the first) |
+| | `validate` | Check the state file and task graph → `{ ok, errors }` |
+| Execute | `start_task` | Claim a task (atomic lock) and move it `pending → in-progress` |
+| | `verify_task` | Run a task's `Verify:` command without changing status |
+| | `complete_task` | Run `Verify:` first, then `in-progress → completed`; refuses on failure |
+| | `block_task` / `unblock_task` | Mark a task blocked with a reason, or return it to pending |
+| | `release_task` | Clear a stale lock without changing status |
+| Bootstrap | `init_project` | Scaffold a project (`name: "."` for in place) |
+| | `set_brief` | Store the source brief text in `docs/brief.md` |
+| | `plan_project` | Dry-run a task plan; returns resolved ids and parallel `waves`, writes nothing |
+| | `add_tasks` | Write an approved plan atomically (all tasks or none) |
+| Re-plan | `update_task` | Edit a pending, unclaimed task in place |
+| | `remove_task` | Delete a pending, unclaimed task nothing depends on |
+
+Every tool except `init_project` takes an optional `project` directory.
 
 MCP deliberately omits `--force`: skipping verification is CLI-only. The optional
 `project` argument must stay inside the directory the server was launched in.
