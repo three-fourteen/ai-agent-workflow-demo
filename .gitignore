@@ -37,3 +37,6 @@ coverage/
 
 # Per-user agent settings (shared config such as .mcp.json is intentionally NOT ignored)
 .claude/settings.local.json
+
+# Subagent worktrees created by Claude Code
+.claude/worktrees/
