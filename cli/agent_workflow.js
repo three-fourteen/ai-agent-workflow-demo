@@ -87,6 +87,22 @@ function cmdVerifyConfig(project, { set, clear }) {
   console.log(cmd ? `project verify: ${cmd}` : 'project verify: (none)');
 }
 
+/** Why `next` is empty: work still in flight, blocked, waiting on dependencies, or truly done. */
+function nothingRunnableHint(project) {
+  const tasks = core.listTasks(project);
+  const ids = status => tasks.filter(t => t.status === status).map(t => t.id);
+  const inProgress = ids('in-progress');
+  const blocked = ids('blocked');
+  const pending = ids('pending');
+  if (inProgress.length) return `No other task is runnable yet; ${inProgress.length} in progress (${inProgress.join(', ')}).`;
+  if (blocked.length) return `Nothing is runnable; blocked: ${blocked.join(', ')}. Unblock or defer ${blocked.length > 1 ? 'them' : 'it'}.`;
+  if (pending.length) {
+    return `Nothing is runnable; ${pending.length} pending task(s) wait on dependencies (${pending.join(', ')}). ` +
+           `Run \`${invokePrefix()} validate\`.`;
+  }
+  return `All tasks are done — run \`${invokePrefix()} validate\`, then \`${invokePrefix()} finalize\`.`;
+}
+
 function cmdTaskDecide(project, taskId, decisions) {
   if (!decisions.length) fail('task decide requires --decision "text" (repeatable).\n' + USAGE);
   const r = core.recordDecisions(project, taskId, decisions);
@@ -107,9 +123,7 @@ function cmdDecisions(project, json) {
 function cmdTaskComplete(project, taskId, { force, noVerify, decisions = [] }) {
   const r = core.completeTask(project, taskId, { force, noVerify, decisions, inherit: true });
   console.log(`${r.taskId} → completed${r.verified ? ' (verified)' : ' (unverified)'}`);
-  console.log(r.nextTask
-    ? `Next task: ${r.nextTask}`
-    : `No runnable task remains — run \`${invokePrefix()} validate\`, then \`${invokePrefix()} finalize\`.`);
+  console.log(r.nextTask ? `Next task: ${r.nextTask}` : nothingRunnableHint(project));
 }
 
 function cmdVerify(project, taskId) {

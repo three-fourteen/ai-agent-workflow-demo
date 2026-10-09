@@ -45,7 +45,7 @@ You are in EXECUTION mode.
 2. Choose a task: use current_task, or run \`agent-workflow next\` for the next
    runnable task (\`--all\` lists every task whose dependencies are satisfied).
 3. Claim it:      agent-workflow task start <id>
-4. Open tasks/<id>-*.md and implement its Subtasks until the Done Criteria are met.
+4. Open tasks/<id>.md and implement its Subtasks until the Done Criteria are met.
 5. Complete it:   agent-workflow task complete <id>
    This runs the task's Verify command and refuses to complete if it fails.
 6. If you cannot proceed:
@@ -54,8 +54,15 @@ You are in EXECUTION mode.
 8. Follow the mode instruction from the command output above.
 
 If the agent-workflow MCP server is connected (and the CLI is not on your PATH),
-use its tools instead of the commands above: get_state, next_tasks, start_task
-(pass a distinct \`agent\` name), complete_task, block_task, validate.
+use its tools instead of the commands above: get_state, next_tasks, start_task /
+start_tasks (pass a distinct \`agent\` name), complete_task / complete_tasks,
+block_task, defer_task, reset_task, record_decision, validate. If your client defers
+tool schemas, load them all in one lookup, not one per call.
+
+Write down choices you make (where a file lives, an output format, a trade-off):
+  agent-workflow task decide <id> --decision "..."     (or --decision on task complete)
+They are stored on the task and shown to the next agent. If a task's scope or Verify
+turns out wrong, \`agent-workflow task reset <id>\` returns it to pending.
 
 Run \`agent-workflow validate\` before finishing. Focus on the current task only.
 `;
@@ -75,22 +82,22 @@ or a task's \`status\` field — use commands so transitions stay valid.
 - Complete: agent-workflow task complete <id>     (in-progress → completed; runs Verify)
 - Block:    agent-workflow task block <id> --reason "..." [--strategy "..."]
 - Unblock:  agent-workflow task unblock <id>       (blocked → pending)
+- Reset:    agent-workflow task reset <id>         (in-progress → pending; releases the claim)
+- Defer:    agent-workflow task defer <id> [--reason "..."]   (backlog; does not block finalize)
+- Reopen:   agent-workflow task reopen <id>        (deferred → pending)
+- Decide:   agent-workflow task decide <id> --decision "..."  (record a choice on the task)
 
 Illegal transitions are rejected by the CLI.
 
 ## Task requirements
 
-Each task file must include:
-- Status
-- Goal
-- Context
-- Dependencies
-- Subtasks
-- Done Criteria
-- Verification
-- Verify        (a shell command that proves the task; exit 0 = pass)
-- Next Step
-- Blockers
+Each task file (tasks/T-001.md) has YAML frontmatter and a Markdown body:
+- Frontmatter: title, status, goal, dependencies, verify (a shell command that proves
+  the task; exit 0 = pass), and optionally source and verify_expect
+- Body sections: Context, Subtasks, Done Criteria, Decisions, Next Step, Blockers
+  (Evidence is added by the CLI on completion)
+Edit the body freely, but leave \`status\` to the CLI. Old-format files still work;
+\`agent-workflow migrate\` converts them.
 
 ## Selecting work
 

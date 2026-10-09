@@ -593,3 +593,26 @@ test('decisions: task decide, task complete --decision, decisions, status and st
   assert.match(run(['--help'], dir).stdout, /task decide/);
   assert.match(run(['decisions', 'empty-proj-does-not-exist'], dir).stderr, /not found|Error/);
 }));
+
+// ---------------------------------------------------------------------------
+// T-008: the "nothing runnable" hint reflects reality
+// ---------------------------------------------------------------------------
+
+test('task complete explains why nothing is runnable instead of suggesting finalize too early', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'First'], dir);
+  run(['task', 'add', 'proj', 'Second'], dir);
+  for (const id of ['T-001', 'T-002']) {
+    const f = join(dir, 'proj', 'tasks', `${id}.md`);
+    writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "true"'));
+  }
+  run(['task', 'start', 'proj', 'T-001'], dir);
+  run(['task', 'start', 'proj', 'T-002'], dir);
+
+  const first = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.match(first.stdout, /No other task is runnable yet; 1 in progress \(T-002\)/);
+  assert.doesNotMatch(first.stdout, /finalize/);
+
+  const last = run(['task', 'complete', 'proj', 'T-002'], dir);
+  assert.match(last.stdout, /All tasks are done — run `.*validate`, then `.*finalize`/);
+}));

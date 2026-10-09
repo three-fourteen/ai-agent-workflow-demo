@@ -1255,3 +1255,58 @@ test('decisions: free text cannot forge the Decisions heading, and legacy files 
   core.migrateProject(dir);                                              // and they survive migration
   assert.deepEqual(core.findTask(dir, 'T-002').decisions, ['legacy decision']);
 }));
+
+// ---------------------------------------------------------------------------
+// T-008: batch start/complete
+// ---------------------------------------------------------------------------
+
+function waveProject(dir, verifyB = 'true') {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTasks(dir, [
+    { key: 'a', title: 'A', verify: 'true' },
+    { key: 'b', title: 'B', verify: verifyB },
+    { key: 'c', title: 'C', verify: 'true', depends_on: ['a', 'b'] },
+  ]);
+}
+
+test('batch: startTasks and completeTasks handle a whole wave in order', () => withTmp(dir => {
+  waveProject(dir);
+  const s = core.startTasks(dir, ['T-001', 'T-002'], { agent: 'wave', redFirst: false });
+  assert.equal(s.ok, true);
+  assert.deepEqual(s.results.map(r => [r.id, r.ok]), [['T-001', true], ['T-002', true]]);
+  assert.deepEqual(core.readState(dir).in_progress.sort(), ['T-001', 'T-002']);
+
+  const c = core.completeTasks(dir, ['t-001', 'T-002']);                 // ids are case-insensitive
+  assert.equal(c.ok, true);
+  assert.ok(c.results.every(r => r.verified === true));
+  assert.deepEqual(c.skipped, []);
+  assert.deepEqual(core.readState(dir).completed_tasks.sort(), ['T-001', 'T-002']);
+  assert.deepEqual(core.runnableTasks(dir).map(t => t.id), ['T-003']);
+}));
+
+test('batch: completeTasks stops at the first failure and leaves later tasks untouched', () => withTmp(dir => {
+  waveProject(dir, 'exit 1');
+  core.startTasks(dir, ['T-001', 'T-002'], { redFirst: false });
+  const c = core.completeTasks(dir, ['T-001', 'T-002']);
+  assert.equal(c.ok, false);
+  assert.equal(c.failed.id, 'T-002');
+  assert.match(c.failed.error, /verification failed for T-002/);
+  assert.deepEqual(c.results.map(r => [r.id, r.ok]), [['T-001', true], ['T-002', false]]);
+  assert.equal(core.findTask(dir, 'T-001').status, 'completed');
+  assert.equal(core.findTask(dir, 'T-002').status, 'in-progress');
+
+  core.startTasks(dir, ['T-003'], { redFirst: false });
+  const again = core.completeTasks(dir, ['T-002', 'T-003']);      // T-002 still fails: T-003 is skipped, not attempted
+  assert.equal(again.ok, false);
+  assert.deepEqual(again.skipped, ['T-003']);
+  assert.equal(core.findTask(dir, 'T-003').status, 'in-progress');
+}));
+
+test('batch: input is validated', () => withTmp(dir => {
+  waveProject(dir);
+  assert.throws(() => core.startTasks(dir, []), /non-empty array/);
+  assert.throws(() => core.startTasks(dir, 'T-001'), /non-empty array/);
+  assert.throws(() => core.startTasks(dir, ['T-001', 't-001']), /must not repeat/);
+  assert.throws(() => core.startTasks(dir, Array.from({ length: 26 }, (_, i) => `T-${i + 1}`)), /at most 25/);
+  assert.throws(() => core.completeTasks(dir, ['T-001'], { decisions: ['x'] }), /per task/);
+}));

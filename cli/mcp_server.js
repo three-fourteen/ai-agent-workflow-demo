@@ -124,6 +124,35 @@ function buildTools(base) {
       run: a => core.startTask(proj(a), a.id, { agent: a.agent || 'mcp', redFirst: a.red_first !== false, workdir: a.workdir || '' }),
     },
     {
+      name: 'start_tasks',
+      description: 'Start several tasks in one call (same as start_task for each id, in order). Stops at the first failure and reports it; later ids are returned in `skipped`. Use for a whole parallel wave.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP,
+          ids: { type: 'array', items: { type: 'string', pattern: '^T-\\d+$' }, minItems: 1, maxItems: 25 },
+          agent: { type: 'string', description: 'Agent name recorded on every lock.' },
+          red_first: { type: 'boolean' },
+        },
+        required: ['ids'],
+      },
+      run: a => core.startTasks(proj(a), a.ids, { agent: a.agent || 'mcp', redFirst: a.red_first !== false }),
+    },
+    {
+      name: 'complete_tasks',
+      description: 'Complete several tasks in one call (same as complete_task for each id, in order; every task is fully verified and records evidence). Stops at the first failure; later ids are returned in `skipped`. For per-task decisions use complete_task or record_decision.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP, ...WORKDIR_PROP,
+          ids: { type: 'array', items: { type: 'string', pattern: '^T-\\d+$' }, minItems: 1, maxItems: 25 },
+          no_verify: { type: 'boolean', description: 'Complete tasks that have no Verify command (project verify still runs).' },
+        },
+        required: ['ids'],
+      },
+      run: a => core.completeTasks(proj(a), a.ids, { noVerify: !!a.no_verify, workdir: a.workdir || '' }),
+    },
+    {
       name: 'verify_task',
       description: 'Run a task\'s Verify command without changing its status.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP }, required: ['id'] },
@@ -328,6 +357,13 @@ function errorResult(message) {
   return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
 }
 
+const SERVER_INSTRUCTIONS = [
+  'Git-native task workflow: state lives in the repo; completion is gated on each task\'s Verify command.',
+  'Tool loading: if your client defers tool schemas, load every workflow tool in ONE lookup (for example ToolSearch "select:plan_project,add_tasks,start_task,start_tasks,complete_task,complete_tasks,next_tasks,get_state,record_decision") instead of one per call.',
+  'Flow: plan_project (dry run, show the user the waves) -> add_tasks -> start_tasks for a whole wave -> do the work -> complete_tasks. Pass a distinct `agent` name per parallel agent.',
+  'Write down choices with record_decision (or `decisions` on complete_task). To change a started task, reset_task or update_task as its claimant; park backlog with defer_task.',
+].join('\n');
+
 /** Create and connect the MCP server. Returns the connected Server. */
 async function runServer(base = '.') {
   const tools = buildTools(base);
@@ -335,7 +371,7 @@ async function runServer(base = '.') {
 
   const server = new Server(
     { name: 'agent-workflow', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

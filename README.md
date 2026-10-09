@@ -72,7 +72,7 @@ Tasks include:
 
 A working zero-dependency CLI bookmark manager, built **end to end through the MCP
 tools** starting from `bookmarks/brief.md`: `init_project` (in place) → `set_brief` →
-`plan_project` → `add_tasks` → `start_task` / `complete_task` with real `Verify:`
+`plan_project` → `add_tasks` → `start_task(s)` / `complete_task(s)` with real `Verify:`
 commands. It also shows mid-run re-planning (`remove_task`, `add_tasks`, `update_task`).
 Unlike the other demos it contains real code: `cd bookmarks && npm test`.
 
@@ -355,19 +355,28 @@ file mutations.
 | | `list_tasks` | All tasks with status, dependencies and verify command |
 | | `get_task` | One task, including its raw file |
 | | `next_tasks` | Runnable tasks: pending, dependencies done, unclaimed (`all=false` for just the first) |
-| | `validate` | Check the state file and task graph → `{ ok, errors }` |
-| Execute | `start_task` | Claim a task (atomic lock) and move it `pending → in-progress` |
+| | `list_decisions` | Every recorded decision, by task |
+| | `validate` | Check the state file and task graph → `{ ok, errors, warnings }` |
+| Execute | `start_task` / `start_tasks` | Claim a task (or a whole wave, in order) and move it `pending → in-progress`; warns if its `Verify` already passes |
 | | `verify_task` | Run a task's `Verify:` command without changing status (optional `workdir`) |
-| | `complete_task` | Run `Verify:` first, then `in-progress → completed`; refuses on failure (optional `workdir`) |
+| | `complete_task` / `complete_tasks` | Run `Verify:` (and the project verify) first, then `in-progress → completed`, recording evidence; refuses on failure. The batch form stops at the first failure |
+| | `record_decision` | Record choices made on a task so the next agent sees them |
 | | `block_task` / `unblock_task` | Mark a task blocked with a reason, or return it to pending |
+| | `defer_task` / `reopen_task` | Park a task as backlog (does not block `finalize`), or bring it back |
+| | `reset_task` | Return an in-progress task to pending, releasing its claim |
 | | `release_task` | Clear a stale lock without changing status |
+| | `set_project_verify` | Set the project-wide check that runs on every completion |
 | | `create_worktree` | Isolate a task on its own git worktree and branch (see below) |
 | Bootstrap | `init_project` | Scaffold a project (`name: "."` for in place) |
 | | `set_brief` | Store the source brief text in `docs/brief.md` |
 | | `plan_project` | Dry-run a task plan; returns resolved ids and parallel `waves`, writes nothing |
 | | `add_tasks` | Write an approved plan atomically (all tasks or none) |
-| Re-plan | `update_task` | Edit a pending, unclaimed task in place |
+| | `migrate_project` | Convert legacy task files to the current format (`dry_run` to preview) |
+| Re-plan | `update_task` | Edit a pending task in place, or an in-progress one as its claimant (`agent`) |
 | | `remove_task` | Delete a pending, unclaimed task nothing depends on |
+
+The server also sends `instructions` that tell agents to load all workflow tools in one
+lookup when their client defers tool schemas, instead of one lookup per call.
 
 Every tool except `init_project` takes an optional `project` directory.
 

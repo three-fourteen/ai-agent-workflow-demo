@@ -371,3 +371,39 @@ test('record_decision, list_decisions and complete_task decisions work over MCP'
     assert.deepEqual(core.findTask(proj, 'T-001').decisions, ['kept it small', 'finished early']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T-008: batch tools and server instructions
+// ---------------------------------------------------------------------------
+
+test('server instructions tell agents to load all workflow tools in one lookup', async () => {
+  await withServer(async ({ client }) => {
+    const text = client.getInstructions();
+    assert.match(text, /ONE lookup/);
+    assert.match(text, /select:plan_project,add_tasks,start_task,start_tasks,complete_task,complete_tasks/);
+    const { tools } = await client.listTools();
+    const names = new Set(tools.map(t => t.name));
+    // every tool the hint names must really exist
+    for (const n of /select:([\w,]+)/.exec(text)[1].split(',')) assert.ok(names.has(n), `instructions name unknown tool ${n}`);
+  });
+});
+
+test('start_tasks and complete_tasks run a wave in one call each', async () => {
+  await withServer(async ({ client, proj }) => {
+    const ids = core.listTasks(proj).map(t => t.id);
+    assert.ok(ids.length >= 1);
+    const started = payload(await client.callTool({ name: 'start_tasks', arguments: { ids: [ids[0]], agent: 'wave', red_first: false } }));
+    assert.equal(started.ok, true);
+    assert.equal(core.findTask(proj, ids[0]).status, 'in-progress');
+
+    const done = payload(await client.callTool({ name: 'complete_tasks', arguments: { ids: [ids[0]], no_verify: true } }));
+    assert.equal(done.ok, true);
+    assert.equal(core.findTask(proj, ids[0]).status, 'completed');
+
+    const bad = payload(await client.callTool({ name: 'complete_tasks', arguments: { ids: [ids[0]] } }));
+    assert.equal(bad.ok, false);                       // already completed: reported, not thrown
+    assert.equal(bad.failed.id, ids[0]);
+    const invalid = await client.callTool({ name: 'complete_tasks', arguments: { ids: [] } });
+    assert.equal(invalid.isError, true);
+  });
+});

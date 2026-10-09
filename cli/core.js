@@ -1431,6 +1431,47 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
   });
 }
 
+const MAX_BATCH = 25;
+
+/**
+ * Run `fn(id)` for each id in order, stopping at the first WorkflowError so later
+ * tasks (which may depend on it) are not touched. Returns
+ * { ok, results: [{ id, ok, ...result | error }], failed, skipped }.
+ */
+function runBatch(ids, fn) {
+  if (!Array.isArray(ids) || !ids.length) throw new WorkflowError('ids must be a non-empty array of task ids.');
+  if (ids.length > MAX_BATCH) throw new WorkflowError(`at most ${MAX_BATCH} tasks per call.`);
+  if (new Set(ids.map(i => String(i).toUpperCase())).size !== ids.length) throw new WorkflowError('ids must not repeat.');
+  const results = [];
+  let failed = null;
+  for (const raw of ids) {
+    const id = String(raw).toUpperCase();
+    try {
+      results.push({ id, ok: true, ...fn(id) });
+    } catch (err) {
+      if (!(err instanceof WorkflowError)) throw err;
+      failed = { id, error: err.message };
+      results.push({ id, ok: false, error: err.message });
+      break;
+    }
+  }
+  return { ok: !failed, results, failed, skipped: ids.slice(results.length).map(i => String(i).toUpperCase()) };
+}
+
+/** Start several tasks in order (see runBatch). `opts` apply to every task. */
+function startTasks(project, ids, opts = {}) {
+  requireProjectDir(project);
+  return runBatch(ids, id => startTask(project, id, opts));
+}
+
+/** Complete several tasks in order, each fully verified (see runBatch). `opts` apply to every task. */
+function completeTasks(project, ids, opts = {}) {
+  requireProjectDir(project);
+  const { decisions, ...rest } = opts; // decisions are per task: use complete_task for those
+  if (decisions && decisions.length) throw new WorkflowError('decisions are per task: use complete_task, or record_decision afterwards.');
+  return runBatch(ids, id => completeTask(project, id, rest));
+}
+
 /**
  * Start a task, then run its Verify once ("red first"): if it ALREADY passes the
  * check may be vacuous, so `warning` is returned. Never blocks. Runs after the
@@ -1824,6 +1865,8 @@ module.exports = {
   runnableTasks,
   startTask,
   migrateProject,
+  startTasks,
+  completeTasks,
   recordDecisions: locked(recordDecisions),
   listDecisions,
   parseDecisions,
