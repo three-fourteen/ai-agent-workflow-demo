@@ -322,6 +322,13 @@ None
 `;
 }
 
+const NEXT_STEP_HINT = 'Run `agent-workflow next --all` for the runnable tasks.';
+/** Next Step text from the dependency graph: the plan tasks that depend on `id`. */
+function dependentsText(resolved, id) {
+  const deps = resolved.filter(x => x.depends_on.includes(id)).map(x => x.id);
+  return deps.length ? `Unblocks ${deps.join(', ')} (once all their dependencies complete). ${NEXT_STEP_HINT}` : NEXT_STEP_HINT;
+}
+
 /**
  * Create the next numbered task file. Returns { taskId, taskPath, setCurrent }.
  * Sets current_task if none is active. `after` may be a string or an array of ids.
@@ -343,7 +350,7 @@ function addTask(project, title, {
     goal: description || title,
     source, context, subtasks, doneCriteria, verify,
     dependencies: deps,
-    nextStep: `Proceed to T-${String(n + 1).padStart(3, '0')}.`,
+    nextStep: NEXT_STEP_HINT,
   }), 'utf8');
 
   const state = readState(project);
@@ -507,7 +514,6 @@ function addTasks(project, specs) {
   const files = plan.resolved.map((r, i) => {
     const spec = specs[i];
     const file = `${r.id}-${slugify(spec.title)}.md`;
-    const next = plan.resolved[i + 1];
     return {
       r, file,
       full: path.join(tasksDir(project), file),
@@ -519,7 +525,7 @@ function addTasks(project, specs) {
         subtasks: spec.subtasks || [],
         doneCriteria: spec.done_criteria || '',
         verify: spec.verify || '',
-        nextStep: next ? `Proceed to ${next.id}.` : 'None.',
+        nextStep: dependentsText(plan.resolved, r.id),
       }),
     };
   });
@@ -734,7 +740,7 @@ function projectSummary(projectPath) {
   return {
     name: projectPath === '.' ? state.project : projectPath,
     phase: state.phase || '?',
-    current: state.current_task || '-',
+    current: deriveCurrentTask(projectPath, state) || '-',
     completed: (state.completed_tasks || []).length,
     total: countTasks(projectPath),
     blocked: !!state.blocked,
@@ -853,9 +859,29 @@ function anyBlocked(projectDir) {
  * The next runnable task in id order (pending, deps completed, unclaimed).
  * Returns a task id or null. Used when completing the current task.
  */
-function selectNextTask(projectDir, state) {
+function selectNextTask(projectDir, state, preferUnblockedBy = null) {
+  if (preferUnblockedBy) {
+    const hit = runnableTasks(projectDir, state).find(t => t.dependencies.includes(preferUnblockedBy));
+    if (hit) return hit.id;
+  }
   const runnable = runnableTasks(projectDir, state);
   return runnable.length ? runnable[0].id : null;
+}
+
+/**
+ * The graph-derived current task: the recorded one if still in progress, else any
+ * in-progress task, else the recorded one if still runnable, else the first runnable
+ * task, else null. Never returns a task that is neither in progress nor runnable.
+ */
+function deriveCurrentTask(project, state) {
+  const tasks = listTasks(project);
+  const inProg = tasks.filter(t => t.status === 'in-progress').map(t => t.id);
+  const cur = state.current_task;
+  if (cur && inProg.includes(cur)) return cur;
+  if (inProg.length) return inProg[0];
+  const runnable = runnableTasks(project, state).map(t => t.id);
+  if (cur && runnable.includes(cur)) return cur;
+  return runnable[0] || null;
 }
 
 function addUnique(arr, id) {
@@ -884,7 +910,7 @@ function startTask(project, taskId, { agent = 'agent' } = {}) {
     const state = readState(project);
     setTaskStatus(project, task, 'in-progress');
     state.in_progress = addUnique(state.in_progress, task.id);
-    if (!state.current_task) state.current_task = task.id;
+    state.current_task = deriveCurrentTask(project, state);
     writeState(project, state);
   } catch (err) {
     releaseLock(project, task.id); // don't leave an orphaned claim behind
@@ -959,11 +985,9 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
     state.in_progress = removeId(state.in_progress, fresh.id);
     if (!verified) state.unverified = addUnique(state.unverified, fresh.id);
 
-    let nextTask = null;
-    if (state.current_task === fresh.id || !state.current_task) {
-      nextTask = selectNextTask(project, state);
-      state.current_task = nextTask;
-    }
+    // Graph-derived: prefer a task this completion just unblocked, else any runnable one.
+    const nextTask = selectNextTask(project, state, fresh.id);
+    state.current_task = deriveCurrentTask(project, state);
     writeState(project, state);
     return { taskId: fresh.id, status: 'completed', nextTask, verified };
   });
@@ -1201,7 +1225,7 @@ function stateSummary(project) {
   const state = readState(project);
   return {
     phase: state.phase || 'prototype',
-    current: state.current_task || 'none',
+    current: deriveCurrentTask(project, state) || 'none',
     blocked: !!state.blocked,
     completed: (state.completed_tasks || []).length,
     total: countTasks(project),

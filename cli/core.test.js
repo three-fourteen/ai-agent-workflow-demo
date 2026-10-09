@@ -753,3 +753,57 @@ test('writeState replaces the file atomically and leaves no temp files', () => w
   assert.equal(core.readState(dir).phase, 'review');
   assert.deepEqual(readdirSync(join(dir, '.ai')).filter(f => f.endsWith('.tmp')), []);
 }));
+
+// ---------------------------------------------------------------------------
+// T-002: current_task / nextTask derive from the dependency graph
+// ---------------------------------------------------------------------------
+
+test('parallel in-progress: completing one leaves current_task on the other', () => withTmp(dir => {
+  const proj = join(dir, 'p');
+  core.initProject(proj, '');
+  core.addTask(proj, 'A');
+  core.addTask(proj, 'B');
+  core.addTask(proj, 'C', { after: 'T-001' });
+  core.startTask(proj, 'T-001');
+  core.startTask(proj, 'T-002');
+  core.completeTask(proj, 'T-001', { noVerify: true });
+  assert.equal(core.readState(proj).current_task, 'T-002');
+  assert.equal(core.stateSummary(proj).current, 'T-002');
+}));
+
+test('completing a task reports a newly unblocked dependent, not the next in line', () => withTmp(dir => {
+  const proj = join(dir, 'p');
+  core.initProject(proj, '');
+  core.addTask(proj, 'A');
+  core.addTask(proj, 'B', { after: 'T-001' });
+  core.addTask(proj, 'C');
+  core.addTask(proj, 'D', { after: ['T-003'] });
+  core.startTask(proj, 'T-003');
+  const r = core.completeTask(proj, 'T-003', { noVerify: true });
+  assert.equal(r.nextTask, 'T-004');
+  assert.equal(core.readState(proj).current_task, 'T-001');
+}));
+
+test('current_task is never stale: a stale value is re-derived on status/start', () => withTmp(dir => {
+  const proj = join(dir, 'p');
+  core.initProject(proj, '');
+  core.addTask(proj, 'A');
+  core.addTask(proj, 'B');
+  core.startTask(proj, 'T-001');
+  core.completeTask(proj, 'T-001', { noVerify: true });
+  const st = core.readState(proj); st.current_task = 'T-001'; core.writeState(proj, st);
+  assert.equal(core.stateSummary(proj).current, 'T-002');
+  core.startTask(proj, 'T-002');
+  assert.equal(core.readState(proj).current_task, 'T-002');
+  core.completeTask(proj, 'T-002', { noVerify: true });
+  assert.equal(core.readState(proj).current_task, null);
+}));
+
+test('task files carry no hard-coded "Proceed to" next step', () => withTmp(dir => {
+  const proj = join(dir, 'p');
+  core.initProject(proj, '');
+  core.addTask(proj, 'A');
+  core.addTasks(proj, [{ key: 'x', title: 'X' }, { key: 'y', title: 'Y', depends_on: ['x'] }]);
+  for (const t of core.listTasks(proj)) assert.doesNotMatch(t.raw, /Proceed to/);
+  assert.match(core.findTask(proj, 'T-002').raw, /Unblocks T-003/);
+}));
