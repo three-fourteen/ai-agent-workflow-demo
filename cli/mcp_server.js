@@ -51,6 +51,12 @@ const WORKDIR_PROP = {
 const ID_PROP = {
   id: { type: 'string', description: 'Task id, e.g. "T-001".', pattern: '^T-\\d+$' },
 };
+const DECISIONS_PROP = {
+  type: 'array',
+  items: { type: 'string', maxLength: 500 },
+  maxItems: 20,
+  description: 'Choices made on this task, one short single-line sentence each (e.g. "bookmarks file lives at ~/.bookmarks.json"). Stored on the task and shown to the next agent.',
+};
 
 /** Build the tool table. `base` is the default project directory. */
 function buildTools(base) {
@@ -131,10 +137,27 @@ function buildTools(base) {
         properties: {
           ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP,
           no_verify: { type: 'boolean', description: 'Complete a task that has no Verify command.' },
+          decisions: DECISIONS_PROP,
         },
         required: ['id'],
       },
-      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify, workdir: a.workdir || '' }),
+      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify, workdir: a.workdir || '', decisions: a.decisions || [] }),
+    },
+    {
+      name: 'record_decision',
+      description: 'Record choices made while working a task (where a file lives, an output format, a trade-off) so they live in the workflow state and the next agent sees them. Works on a task in any status; duplicates are skipped.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, ...ID_PROP, decisions: DECISIONS_PROP },
+        required: ['id', 'decisions'],
+      },
+      run: a => core.recordDecisions(proj(a), a.id, a.decisions),
+    },
+    {
+      name: 'list_decisions',
+      description: 'Every decision recorded on any task, in task order: [{ task, title, text }].',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP } },
+      run: a => core.listDecisions(proj(a)),
     },
     {
       name: 'block_task',

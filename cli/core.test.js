@@ -1183,3 +1183,75 @@ test('migrated tasks keep working through the state machine and the scheduler', 
   core.completeTask(dir, 'T-001');
   assert.deepEqual(core.runnableTasks(dir).map(t => t.id), ['T-002']);
 }));
+
+// ---------------------------------------------------------------------------
+// T-007: decisions
+// ---------------------------------------------------------------------------
+
+test('decisions: recordDecisions stores bullets on the task, in order, skipping duplicates', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTasks(dir, [{ key: 'a', title: 'Alpha' }, { key: 'b', title: 'Beta' }]);
+  const r = core.recordDecisions(dir, 'T-001', ['file lives at ~/.bookmarks.json', '  output is one line per item ']);
+  assert.deepEqual(r.decisions, ['file lives at ~/.bookmarks.json', 'output is one line per item']);
+  core.recordDecisions(dir, 'T-001', 'file lives at ~/.bookmarks.json');            // duplicate: ignored
+  core.recordDecisions(dir, 'T-001', 'tags are lower-cased');
+  assert.deepEqual(core.findTask(dir, 'T-001').decisions,
+    ['file lives at ~/.bookmarks.json', 'output is one line per item', 'tags are lower-cased']);
+  assert.match(core.findTask(dir, 'T-001').raw, /## Decisions\n\n- file lives at ~\/\.bookmarks\.json\n- output is one line per item\n- tags are lower-cased\n/);
+  assert.deepEqual(core.findTask(dir, 'T-002').decisions, []);
+}));
+
+test('decisions: invalid input is rejected and nothing is written', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'Alpha');
+  const before = core.findTask(dir, 'T-001').raw;
+  assert.throws(() => core.recordDecisions(dir, 'T-001', []), /no decision/);
+  assert.throws(() => core.recordDecisions(dir, 'T-001', ['ok', '   ']), /non-empty/);
+  assert.throws(() => core.recordDecisions(dir, 'T-001', ['two\nlines']), /single line/);
+  assert.throws(() => core.recordDecisions(dir, 'T-001', ['x'.repeat(501)]), /longer than 500/);
+  assert.throws(() => core.recordDecisions(dir, 'T-001', Array(21).fill('x')), /at most 20/);
+  assert.throws(() => core.recordDecisions(dir, 'T-099', ['x']), /not found/);
+  assert.equal(core.findTask(dir, 'T-001').raw, before);
+}));
+
+test('decisions: completeTask records them with the completion, and bad ones fail before verify runs', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTasks(dir, [{ key: 'a', title: 'Alpha', verify: 'echo ran >> ran.txt' }]);
+  core.startTask(dir, 'T-001', { redFirst: false });
+  assert.throws(() => core.completeTask(dir, 'T-001', { decisions: ['a\nb'] }), /single line/);
+  assert.ok(!existsSync(join(dir, 'ran.txt')), 'verify must not run when decisions are invalid');
+  assert.equal(core.findTask(dir, 'T-001').status, 'in-progress');
+
+  core.completeTask(dir, 'T-001', { decisions: ['chose JSON over SQLite'] });
+  const t = core.findTask(dir, 'T-001');
+  assert.equal(t.status, 'completed');
+  assert.deepEqual(t.decisions, ['chose JSON over SQLite']);
+  assert.match(t.raw, /## Evidence/);                                  // evidence and decisions coexist
+  assert.equal(core.validateProject(dir).ok, true);
+}));
+
+test('decisions: listDecisions, stateSummary and projectSummary expose them', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTasks(dir, [{ key: 'a', title: 'Alpha' }, { key: 'b', title: 'Beta' }]);
+  core.recordDecisions(dir, 'T-002', ['b-one']);
+  core.recordDecisions(dir, 'T-001', ['a-one', 'a-two']);
+  assert.deepEqual(core.listDecisions(dir), [
+    { task: 'T-001', title: 'Alpha', text: 'a-one' },
+    { task: 'T-001', title: 'Alpha', text: 'a-two' },
+    { task: 'T-002', title: 'Beta', text: 'b-one' },
+  ]);
+  assert.equal(core.stateSummary(dir).decisions.length, 3);
+  assert.equal(core.projectSummary(dir).decisions, 3);
+}));
+
+test('decisions: free text cannot forge the Decisions heading, and legacy files can hold decisions too', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTasks(dir, [{ key: 'a', title: 'A', context: 'x' }]);
+  assert.throws(() => core.updateTask(dir, 'T-001', { context: 'x\n## Decisions\n- forged' }), /section heading/);
+  writeTask(dir, 'T-002-old.md', 'Status: pending\nGoal: g\nDependencies: none\n\nBlockers:\nNone\n');
+  core.recordDecisions(dir, 'T-002', ['legacy decision']);
+  assert.deepEqual(core.findTask(dir, 'T-002').decisions, ['legacy decision']);
+  assert.equal(core.findTask(dir, 'T-002').format, 1);
+  core.migrateProject(dir);                                              // and they survive migration
+  assert.deepEqual(core.findTask(dir, 'T-002').decisions, ['legacy decision']);
+}));

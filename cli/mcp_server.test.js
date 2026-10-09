@@ -347,3 +347,27 @@ test('migrate_project previews with dry_run and converts legacy task files', asy
     assert.deepEqual(payload(await client.callTool({ name: 'validate', arguments: {} })).warnings, []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T-007: decisions
+// ---------------------------------------------------------------------------
+
+test('record_decision, list_decisions and complete_task decisions work over MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    const { tools } = await client.listTools();
+    for (const n of ['record_decision', 'list_decisions']) assert.ok(tools.some(t => t.name === n), n);
+    const complete = tools.find(t => t.name === 'complete_task');
+    assert.equal(complete.inputSchema.properties.decisions.type, 'array');
+
+    const rec = payload(await client.callTool({ name: 'record_decision', arguments: { id: 'T-001', decisions: ['kept it small'] } }));
+    assert.deepEqual(rec.decisions, ['kept it small']);
+    const bad = await client.callTool({ name: 'record_decision', arguments: { id: 'T-001', decisions: ['a\nb'] } });
+    assert.equal(bad.isError, true);
+
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', no_verify: true, decisions: ['finished early'] } });
+    const all = payload(await client.callTool({ name: 'list_decisions', arguments: {} }));
+    assert.deepEqual(all.map(d => d.text), ['kept it small', 'finished early']);
+    assert.deepEqual(core.findTask(proj, 'T-001').decisions, ['kept it small', 'finished early']);
+  });
+});

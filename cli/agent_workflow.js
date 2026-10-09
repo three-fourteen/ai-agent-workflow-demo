@@ -87,8 +87,25 @@ function cmdVerifyConfig(project, { set, clear }) {
   console.log(cmd ? `project verify: ${cmd}` : 'project verify: (none)');
 }
 
-function cmdTaskComplete(project, taskId, { force, noVerify }) {
-  const r = core.completeTask(project, taskId, { force, noVerify, inherit: true });
+function cmdTaskDecide(project, taskId, decisions) {
+  if (!decisions.length) fail('task decide requires --decision "text" (repeatable).\n' + USAGE);
+  const r = core.recordDecisions(project, taskId, decisions);
+  console.log(`${r.taskId}: ${r.decisions.length} decision(s) recorded`);
+}
+
+function cmdDecisions(project, json) {
+  const all = core.listDecisions(project);
+  if (json) { console.log(JSON.stringify(all, null, 2)); return; }
+  if (!all.length) { console.log('No decisions recorded.'); return; }
+  let last = '';
+  for (const d of all) {
+    if (d.task !== last) { console.log(`${d.task}  ${d.title}`); last = d.task; }
+    console.log(`  - ${d.text}`);
+  }
+}
+
+function cmdTaskComplete(project, taskId, { force, noVerify, decisions = [] }) {
+  const r = core.completeTask(project, taskId, { force, noVerify, decisions, inherit: true });
   console.log(`${r.taskId} → completed${r.verified ? ' (verified)' : ' (unverified)'}`);
   console.log(r.nextTask
     ? `Next task: ${r.nextTask}`
@@ -246,6 +263,7 @@ function cmdStatus(filterProject) {
       (s.blocked ? 'yes' : 'no')
     );
     if (s.deferred.length) console.log(`  deferred: ${s.deferred.join(', ')}`);
+    if (s.decisions) console.log(`  decisions: ${s.decisions} (run \`${invokePrefix()} decisions\`)`);
   }
 }
 
@@ -271,6 +289,7 @@ function cmdPlan(project, execute) {
   }
   console.log(`Current state: phase=${s.phase}, current_task=${s.current}, blocked=${s.blocked}.`);
   console.log(`Completed: ${s.completed}/${s.total} tasks.`);
+  printDecisionsSoFar(s.decisions);
 }
 
 function cmdStart(project, all) {
@@ -286,6 +305,15 @@ function cmdStart(project, all) {
   }
   console.log(`Current state: phase=${s.phase}, current_task=${s.current}, blocked=${s.blocked}.`);
   console.log(`Completed: ${s.completed}/${s.total} tasks.`);
+  printDecisionsSoFar(s.decisions);
+}
+
+/** Show the latest decisions so the next agent starts from what was already settled. */
+function printDecisionsSoFar(decisions, limit = 10) {
+  if (!decisions.length) return;
+  const shown = decisions.slice(-limit);
+  console.log(`Decisions so far${decisions.length > shown.length ? ` (latest ${shown.length} of ${decisions.length}; see \`${invokePrefix()} decisions\`)` : ''}:`);
+  for (const d of shown) console.log(`  - ${d.task}: ${d.text}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +345,8 @@ function parseFlags(argv) {
       flags.json = true;
     } else if (arg === '--dry-run') {
       flags.dryRun = true;
+    } else if (arg === '--decision') {
+      (flags.decisions = flags.decisions || []).push(argv[++i]);
     } else if (arg === '--agent') {
       flags.agent = argv[++i];
     } else if (arg === '--set') {
@@ -335,7 +365,8 @@ Usage:
   agent-workflow init [<project>] [--description|-d "..."]
   agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
   agent-workflow task start [<project>] <id> [--agent NAME]
-  agent-workflow task complete [<project>] <id> [--force|-f] [--no-verify]
+  agent-workflow task complete [<project>] <id> [--force|-f] [--no-verify] [--decision "..."]...
+  agent-workflow task decide [<project>] <id> --decision "..." [--decision "..."]...
   agent-workflow task verify [<project>] <id>
   agent-workflow task block [<project>] <id> --reason "..." [--strategy "..."]
   agent-workflow task unblock [<project>] <id>
@@ -348,6 +379,7 @@ Usage:
   agent-workflow worktree [<project>] <id>
   agent-workflow status [<project>]
   agent-workflow verify-config [<project>] [--set "<command>" | --clear]
+  agent-workflow decisions [<project>] [--json]
   agent-workflow migrate [<project>] [--dry-run]
   agent-workflow validate [<project>]
   agent-workflow finalize [<project>]
@@ -399,7 +431,11 @@ function main() {
 
     } else if (sub === 'complete') {
       const { project, taskId } = resolveTaskArgs(positional, 'complete');
-      cmdTaskComplete(project, taskId, { force: flags.force || false, noVerify: flags.noVerify || false });
+      cmdTaskComplete(project, taskId, { force: flags.force || false, noVerify: flags.noVerify || false, decisions: flags.decisions || [] });
+
+    } else if (sub === 'decide') {
+      const { project, taskId } = resolveTaskArgs(positional, 'decide');
+      cmdTaskDecide(project, taskId, flags.decisions || []);
 
     } else if (sub === 'verify') {
       const { project, taskId } = resolveTaskArgs(positional, 'verify');
@@ -451,6 +487,10 @@ function main() {
   } else if (command === 'verify-config') {
     const { flags, positional } = parseFlags(rest);
     cmdVerifyConfig(positional[0] || '.', { set: flags.set, clear: flags.clear || false });
+
+  } else if (command === 'decisions') {
+    const { positional, flags } = parseFlags(rest);
+    cmdDecisions(positional[0] || '.', !!flags.json);
 
   } else if (command === 'migrate') {
     const { positional, flags } = parseFlags(rest);

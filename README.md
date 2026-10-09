@@ -506,6 +506,22 @@ can't silently point at a different task.
 agent-workflow mcp                # serve the current project
 ```
 
+### Recording decisions
+
+Choices made while working a task (where a file lives, an output format, a trade-off) used
+to exist only in chat. Record them on the task so the next agent sees them:
+
+```bash
+agent-workflow task decide T-003 --decision "bookmarks file lives at ~/.bookmarks.json"
+agent-workflow task complete T-003 --decision "tags are lower-cased"   # same, at completion
+agent-workflow decisions [--json]                                      # every decision, by task
+```
+
+Decisions are stored as bullets under `## Decisions` in the task file (one line each, 500
+characters at most, duplicates skipped) and work on a task in any status. `status` shows the
+count, and `plan` / `start` print the latest ones. MCP: `record_decision`, `list_decisions`,
+and a `decisions` argument on `complete_task`.
+
 ### migrate
 
 ```bash

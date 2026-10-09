@@ -563,3 +563,33 @@ test('migrate converts legacy task files, supports --dry-run, and validate stops
   assert.match(run(['migrate', 'proj'], dir).stdout, /Nothing to migrate/);
   assert.match(run(['--help'], dir).stdout, /migrate \[<project>\] \[--dry-run\]/);
 }));
+
+// ---------------------------------------------------------------------------
+// T-007: decisions
+// ---------------------------------------------------------------------------
+
+test('decisions: task decide, task complete --decision, decisions, status and start prompts', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "true"'));
+  run(['task', 'start', 'proj', 'T-001'], dir);
+
+  assert.equal(run(['task', 'decide', 'proj', 'T-001'], dir).status, 1);        // needs --decision
+  const d = run(['task', 'decide', 'proj', 'T-001', '--decision', 'use tabs', '--decision', 'no semicolons'], dir);
+  assert.equal(d.status, 0);
+  assert.match(d.stdout, /T-001: 2 decision\(s\) recorded/);
+
+  const c = run(['task', 'complete', 'proj', 'T-001', '--decision', 'shipped as a single file'], dir);
+  assert.equal(c.status, 0);
+
+  const list = run(['decisions', 'proj'], dir);
+  assert.match(list.stdout, /T-001  Setup\n  - use tabs\n  - no semicolons\n  - shipped as a single file\n/);
+  const json = JSON.parse(run(['decisions', 'proj', '--json'], dir).stdout);
+  assert.deepEqual(json.map(x => x.text), ['use tabs', 'no semicolons', 'shipped as a single file']);
+
+  assert.match(run(['status', 'proj'], dir).stdout, /decisions: 3/);
+  assert.match(run(['start', 'proj'], dir).stdout, /Decisions so far:\n  - T-001: use tabs/);
+  assert.match(run(['--help'], dir).stdout, /task decide/);
+  assert.match(run(['decisions', 'empty-proj-does-not-exist'], dir).stderr, /not found|Error/);
+}));

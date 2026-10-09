@@ -187,7 +187,7 @@ function taskIdFromFilename(filename) {
 // lines) are still read and edited in place; `migrate` converts them.
 
 const FORMAT_VERSION = 2;
-const SECTION_NAMES = ['Context', 'Subtasks', 'Done Criteria', 'Verification', 'Next Step', 'Blockers', 'Evidence'];
+const SECTION_NAMES = ['Context', 'Subtasks', 'Done Criteria', 'Decisions', 'Verification', 'Next Step', 'Blockers', 'Evidence'];
 const SECTION_RE = new RegExp(`^##\\s+(${SECTION_NAMES.join('|')})\\s*$`, 'i');
 /** Body headings v2 sections are delimited by; free text must not contain them. */
 const RESERVED_HEADING_RE = new RegExp(`^##\\s+(${SECTION_NAMES.join('|')})\\s*$`, 'im');
@@ -313,6 +313,7 @@ function parseTaskText(raw, filename) {
     verify: fields.verify,
     verifyExpect: fields.verifyExpect,
     source: fields.source,
+    decisions: parseDecisions(raw),
     raw,
   };
 }
@@ -654,7 +655,7 @@ function addTasks(project, specs) {
 // ---------------------------------------------------------------------------
 
 const HEADERS = ['Status', 'Goal', 'Source', 'Context', 'Dependencies', 'Subtasks',
-                 'Done Criteria', 'Verification', 'Verify', 'Verify-Expect', 'Evidence', 'Next Step', 'Blockers'];
+                 'Done Criteria', 'Decisions', 'Verification', 'Verify', 'Verify-Expect', 'Evidence', 'Next Step', 'Blockers'];
 const HEADER_RE = new RegExp(`^(${HEADERS.join('|')}):`, 'i');
 const headerRe = name => new RegExp(`^${name}:`, 'i');
 
@@ -726,6 +727,81 @@ function setSection(raw, header, body) {
   while (end < lines.length && !SECTION_RE.test(lines[end])) end++;
   lines.splice(i, end - i, ...block);
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Decisions — choices made while working a task, kept with the task
+// ---------------------------------------------------------------------------
+
+const MAX_DECISION_LEN = 500;
+const MAX_DECISIONS_PER_CALL = 20;
+
+/** Body lines of a named section in either format ([] when absent). */
+function getSection(raw, name) {
+  const lines = raw.split(/\r?\n/);
+  const want = name.toLowerCase();
+  if (hasFrontmatter(raw)) {
+    const i = lines.findIndex(l => { const m = SECTION_RE.exec(l); return m && m[1].toLowerCase() === want; });
+    if (i < 0) return [];
+    let end = i + 1;
+    while (end < lines.length && !SECTION_RE.test(lines[end])) end++;
+    return lines.slice(i + 1, end);
+  }
+  const i = lines.findIndex(l => headerRe(name).test(l));
+  if (i < 0) return [];
+  let end = i + 1;
+  while (end < lines.length && !HEADER_RE.test(lines[end])) end++;
+  return lines.slice(i + 1, end);
+}
+
+/** The recorded decisions of a task file: the `- ` bullets of its Decisions section. */
+function parseDecisions(raw) {
+  return getSection(raw, 'Decisions')
+    .map(l => /^\s*[-*]\s+(.*\S)\s*$/.exec(l))
+    .filter(Boolean)
+    .map(m => m[1]);
+}
+
+/** Validate and clean a list of decision strings; throws WorkflowError on bad input. */
+function normalizeDecisions(list) {
+  if (list === undefined || list === null) return [];
+  const items = Array.isArray(list) ? list : [list];
+  if (items.length > MAX_DECISIONS_PER_CALL) {
+    throw new WorkflowError(`at most ${MAX_DECISIONS_PER_CALL} decisions per call.`);
+  }
+  return items.map((d, i) => {
+    if (typeof d !== 'string' || !d.trim()) throw new WorkflowError(`decision #${i + 1} must be a non-empty string.`);
+    if (/[\r\n]/.test(d)) throw new WorkflowError(`decision #${i + 1} must be a single line.`);
+    if (d.trim().length > MAX_DECISION_LEN) throw new WorkflowError(`decision #${i + 1} is longer than ${MAX_DECISION_LEN} characters.`);
+    return d.trim();
+  });
+}
+
+/** Append decisions to a task file's text (existing ones are kept, duplicates skipped). */
+function withDecisions(raw, decisions) {
+  const have = parseDecisions(raw);
+  const add = decisions.filter(d => !have.includes(d));
+  if (!add.length) return raw;
+  return setSection(raw, 'Decisions', [...have, ...add].map(d => `- ${d}`).join('\n'));
+}
+
+/**
+ * Record decisions on a task (any status). Returns { taskId, decisions } with
+ * every decision now on the task.
+ */
+function recordDecisions(project, taskId, decisions) {
+  requireProjectDir(project);
+  const items = normalizeDecisions(decisions);
+  if (!items.length) throw new WorkflowError('no decision given.');
+  const task = findTask(project, taskId);
+  fs.writeFileSync(path.join(tasksDir(project), task.file), withDecisions(task.raw, items), 'utf8');
+  return { taskId: task.id, decisions: findTask(project, taskId).decisions };
+}
+
+/** Every recorded decision in the project, in task order: [{ task, title, text }]. */
+function listDecisions(project) {
+  requireProjectDir(project);
+  return listTasks(project).flatMap(t => t.decisions.map(text => ({ task: t.id, title: t.title, text })));
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,6 +1076,7 @@ function projectSummary(projectPath) {
     total: countTasks(projectPath),
     blocked: !!state.blocked,
     deferred: listTasks(projectPath).filter(t => t.status === 'deferred').map(t => t.id),
+    decisions: listDecisions(projectPath).length,
   };
 }
 
@@ -1298,8 +1375,9 @@ function renderEvidence(checks, commit, at) {
  * commit are recorded in the task file's `Evidence:` section. Advances
  * current_task to the next runnable task.
  */
-function completeTask(project, taskId, { force = false, noVerify = false, inherit = false, workdir = '' } = {}) {
+function completeTask(project, taskId, { force = false, noVerify = false, inherit = false, workdir = '', decisions = [] } = {}) {
   requireProjectDir(project);
+  const decided = normalizeDecisions(decisions); // fail before running a slow verify
   const task = findTask(project, taskId);
   assertTransition(task.status, 'completed');
 
@@ -1335,6 +1413,10 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
       const full = path.join(tasksDir(project), fresh.file);
       const raw = setSection(fs.readFileSync(full, 'utf8'), 'Evidence', renderEvidence(checks, commit, new Date().toISOString()));
       fs.writeFileSync(full, raw, 'utf8');
+    }
+    if (decided.length) {
+      const full = path.join(tasksDir(project), fresh.file);
+      fs.writeFileSync(full, withDecisions(fs.readFileSync(full, 'utf8'), decided), 'utf8');
     }
     releaseLock(project, fresh.id);
     state.completed_tasks = addUnique(state.completed_tasks, fresh.id);
@@ -1703,6 +1785,7 @@ function stateSummary(project) {
     blocked: !!state.blocked,
     completed: (state.completed_tasks || []).length,
     total: countTasks(project),
+    decisions: listDecisions(project),
   };
 }
 
@@ -1741,6 +1824,9 @@ module.exports = {
   runnableTasks,
   startTask,
   migrateProject,
+  recordDecisions: locked(recordDecisions),
+  listDecisions,
+  parseDecisions,
   parseTaskText,
   setField,
   FORMAT_VERSION,

@@ -23,7 +23,7 @@ without it.
 npm test
 ```
 
-150 tests using Node's built-in `node:test` runner, across:
+157 tests using Node's built-in `node:test` runner, across:
 
 - `cli/core.test.js` — the engine: task parsing, the state machine, verification, the scheduler, locks, and validation
 - `cli/agent_workflow.test.js` — the CLI surface: every command, flags, and error paths
