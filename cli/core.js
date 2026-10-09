@@ -606,10 +606,24 @@ function assertEditable(project, task) {
  * context, depends_on (task ids), subtasks, done_criteria, verify, source.
  * Hand-written content outside the patched fields is left untouched.
  */
-function updateTask(project, taskId, patch = {}) {
+function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
-  assertEditable(project, task);
+  if (task.status === 'in-progress') {
+    // A started task may be re-scoped, but only by the agent that claimed it.
+    const held = readLock(project, task.id);
+    if (held && held.agent !== agent) {
+      throw new WorkflowError(
+        `${task.id} is in progress, claimed by '${held.agent}'; only that agent can update it` +
+        `${agent ? ` (you passed '${agent}')` : ' (pass agent)'}.`);
+    }
+    const structural = Object.keys(patch).filter(k => k === 'title' || k === 'depends_on');
+    if (structural.length) {
+      throw new WorkflowError(`${task.id} is in progress; ${structural.join(', ')} can only change while pending (reset it first).`);
+    }
+  } else {
+    assertEditable(project, task);
+  }
 
   const known = ['title', 'goal', 'context', 'depends_on', 'subtasks', 'done_criteria', 'verify', 'source'];
   const unknown = Object.keys(patch).filter(k => !known.includes(k));
@@ -818,7 +832,7 @@ const STATUSES = ['pending', 'in-progress', 'completed', 'blocked'];
 /** Legal transitions: from-status -> set of allowed to-statuses. */
 const TRANSITIONS = {
   'pending':     new Set(['in-progress', 'blocked']),
-  'in-progress': new Set(['completed', 'blocked']),
+  'in-progress': new Set(['completed', 'blocked', 'pending']),
   'blocked':     new Set(['pending', 'in-progress']),
   'completed':   new Set(),
 };
@@ -1017,6 +1031,30 @@ function claimTask(project, taskId, { agent = 'agent' } = {}) {
   const task = findTask(project, taskId);
   acquireLock(project, task.id, agent);
   return { taskId: task.id, agent };
+}
+
+/**
+ * in-progress → pending. Drops the claim and the in_progress entry, keeps the task
+ * content. With `agent`, refuses when the task is claimed by a different agent.
+ */
+function resetTask(project, taskId, { agent = '' } = {}) {
+  requireProjectDir(project);
+  const task = findTask(project, taskId);
+  assertTransition(task.status, 'pending');
+  const held = readLock(project, task.id);
+  if (agent && held && held.agent !== agent) {
+    throw new WorkflowError(`${task.id} is claimed by '${held.agent}', not '${agent}'.`);
+  }
+  const state = readState(project);
+  setTaskStatus(project, task, 'pending');
+  releaseLock(project, task.id);
+  state.in_progress = removeId(state.in_progress, task.id);
+  if (state.current_task === task.id) {
+    const others = removeId(state.in_progress, task.id);
+    state.current_task = others.length ? others[0] : selectNextTask(project, state);
+  }
+  writeState(project, state);
+  return { taskId: task.id, status: 'pending', currentTask: state.current_task };
 }
 
 /** Release a task's claim. */
@@ -1248,6 +1286,7 @@ module.exports = {
   unblockTask: locked(unblockTask),
   claimTask: locked(claimTask),
   releaseTask: locked(releaseTask),
+  resetTask: locked(resetTask),
   listLocks,
   readLock,
   worktreePlan,

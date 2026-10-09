@@ -585,7 +585,7 @@ test('re-planning is refused for started, completed and claimed tasks', () => wi
   core.initProject(proj, '');
   core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'true' }, { key: 'b', title: 'B' }]);
   core.startTask(proj, 'T-001');
-  assert.throws(() => core.updateTask(proj, 'T-001', { goal: 'x' }), /in-progress; only pending/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { goal: 'x' }), /claimed by 'agent'/);
   assert.throws(() => core.removeTask(proj, 'T-001'), /only pending/);
   core.completeTask(proj, 'T-001');
   assert.throws(() => core.removeTask(proj, 'T-001'), /completed; only pending/);
@@ -752,4 +752,43 @@ test('writeState replaces the file atomically and leaves no temp files', () => w
   core.writeState(dir, state);
   assert.equal(core.readState(dir).phase, 'review');
   assert.deepEqual(readdirSync(join(dir, '.ai')).filter(f => f.endsWith('.tmp')), []);
+}));
+
+// ---------------------------------------------------------------------------
+// T-003: task reset + in-progress update_task (claimant only)
+// ---------------------------------------------------------------------------
+
+test('resetTask returns an in-progress task to pending and fixes state', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'true' }, { key: 'b', title: 'B' }]);
+  core.startTask(proj, 'T-001', { agent: 'alice' });
+  assert.throws(() => core.resetTask(proj, 'T-001', { agent: 'bob' }), /claimed by 'alice'/);
+  const r = core.resetTask(proj, 'T-001', { agent: 'alice' });
+  assert.equal(r.status, 'pending');
+  assert.equal(core.findTask(proj, 'T-001').status, 'pending');
+  assert.equal(core.readLock(proj, 'T-001'), null);
+  const st = core.readState(proj);
+  assert.deepEqual(st.in_progress, []);
+  assert.equal(st.current_task, 'T-001'); // next runnable
+  assert.equal(core.findTask(proj, 'T-001').verify, 'true');
+  assert.throws(() => core.resetTask(proj, 'T-001'), /illegal transition/);
+  core.startTask(proj, 'T-001'); // restartable
+}));
+
+test('updateTask edits an in-progress task only for its claimant', () => withTmp(dir => {
+  const proj = join(dir, 'proj');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'true' }]);
+  core.startTask(proj, 'T-001', { agent: 'alice' });
+  assert.throws(() => core.updateTask(proj, 'T-001', { verify: 'false' }), /claimed by 'alice'/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { verify: 'false' }, { agent: 'bob' }), /claimed by 'alice'/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { title: 'New' }, { agent: 'alice' }), /can only change while pending/);
+  core.updateTask(proj, 'T-001', { verify: 'echo ok', goal: 'New goal' }, { agent: 'alice' });
+  const t = core.findTask(proj, 'T-001');
+  assert.equal(t.verify, 'echo ok');
+  assert.equal(t.goal, 'New goal');
+  assert.equal(t.status, 'in-progress');
+  core.completeTask(proj, 'T-001');
+  assert.throws(() => core.updateTask(proj, 'T-001', { goal: 'x' }, { agent: 'alice' }), /completed; only pending/);
 }));

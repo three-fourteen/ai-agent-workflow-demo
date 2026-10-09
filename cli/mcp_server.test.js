@@ -248,3 +248,24 @@ test('create_worktree + workdir: verify runs against the task branch', async () 
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// T-003: reset_task and in-progress update_task
+// ---------------------------------------------------------------------------
+
+test('update_task edits in-progress tasks for the claimant; reset_task returns them to pending', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001', agent: 'alice' } });
+    const other = await client.callTool({ name: 'update_task', arguments: { id: 'T-001', verify: 'true', agent: 'bob' } });
+    assert.equal(other.isError, true);
+    assert.match(other.content[0].text, /claimed by 'alice'/);
+    const ok = await client.callTool({ name: 'update_task', arguments: { id: 'T-001', verify: 'true', agent: 'alice' } });
+    assert.notEqual(ok.isError, true);
+    assert.equal(core.findTask(proj, 'T-001').verify, 'true');
+
+    const reset = await client.callTool({ name: 'reset_task', arguments: { id: 'T-001' } });
+    assert.equal(payload(reset).status, 'pending');
+    assert.equal(core.findTask(proj, 'T-001').status, 'pending');
+    assert.deepEqual(core.readState(proj).in_progress, []);
+  });
+});
