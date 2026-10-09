@@ -208,9 +208,11 @@ function parseDependencies(raw) {
 function parseTaskFile(fullPath) {
   const raw = fs.readFileSync(fullPath, 'utf8');
   const filename = path.basename(fullPath);
-  const fields = { status: 'pending', dependencies: [], goal: '', verify: '', source: '' };
+  const fields = { status: 'pending', dependencies: [], goal: '', verify: '', verifyExpect: '', source: '' };
 
   for (const line of raw.split(/\r?\n/)) {
+    const ve = /^Verify-Expect:\s*(.*)$/i.exec(line);
+    if (ve) { fields.verifyExpect = ve[1].trim(); continue; }
     const m = /^([A-Za-z][A-Za-z ]*?):\s*(.*)$/.exec(line);
     if (!m) continue;
     const key = m[1].trim().toLowerCase();
@@ -231,6 +233,7 @@ function parseTaskFile(fullPath) {
     dependencies: fields.dependencies,
     goal: fields.goal,
     verify: fields.verify,
+    verifyExpect: fields.verifyExpect,
     source: fields.source,
     raw,
   };
@@ -294,7 +297,7 @@ function initProject(project, description, { inPlace: forceInPlace = false, name
 
 /** Render a task markdown file in the canonical loose `Key: value` format. */
 function renderTask({ goal, source = '', context = '', dependencies = [], subtasks = [],
-                      doneCriteria = '', verify = '', nextStep = 'None.' }) {
+                      doneCriteria = '', verify = '', verifyExpect = '', nextStep = 'None.' }) {
   const deps = dependencies.length ? dependencies.join(', ') : 'none';
   const subs = subtasks.length ? subtasks.map((t, i) => `${i + 1}. ${t}`).join('\n') : '';
   const block = text => (text ? `${text}\n` : '');
@@ -314,7 +317,7 @@ ${block(doneCriteria)}
 Verification:
 
 Verify: ${verify}
-
+${verifyExpect ? `\nVerify-Expect: ${verifyExpect}\n` : ''}
 Next Step:
 ${nextStep}
 
@@ -371,16 +374,23 @@ function addTask(project, title, {
 
 const KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
 /** Free-text lines that the line-based task parser would mistake for fields. */
-const RESERVED_LINE_RE = /^\s*(status|dependencies|goal|verify|source)\s*:/im;
+const RESERVED_LINE_RE = /^\s*(status|dependencies|goal|verify|verify-expect|source|evidence)\s*:/im;
 const MAX_SUBTASKS = 8;
 
 function checkOneLine(errors, label, v) {
   if (typeof v !== 'string' || /[\r\n]/.test(v)) errors.push(`${label} must be a single-line string`);
 }
+/** A single-line, compilable regular expression (the `verify_expect` field). */
+function checkExpect(errors, label, v) {
+  checkOneLine(errors, label, v);
+  if (typeof v === 'string' && !/[\r\n]/.test(v)) {
+    try { new RegExp(v); } catch (e) { errors.push(`${label} is not a valid regular expression: ${e.message}`); }
+  }
+}
 function checkFreeText(errors, label, v) {
   if (typeof v !== 'string') errors.push(`${label} must be a string`);
   else if (RESERVED_LINE_RE.test(v)) {
-    errors.push(`${label} has a line starting with a reserved field (Status/Dependencies/Goal/Verify/Source)`);
+    errors.push(`${label} has a line starting with a reserved field (Status/Dependencies/Goal/Verify/Verify-Expect/Source/Evidence)`);
   }
 }
 
@@ -388,7 +398,7 @@ function checkFreeText(errors, label, v) {
  * Validate a proposed plan and resolve it to concrete task ids WITHOUT writing
  * anything. Works before `init` (ids start at T-001) and when appending to an
  * existing project. Each spec: { key, title, goal?, context?, depends_on?,
- * subtasks?, done_criteria?, verify?, source? }; `depends_on` entries are plan
+ * subtasks?, done_criteria?, verify?, verify_expect?, source? }; `depends_on` entries are plan
  * keys or existing task ids.
  *
  * Returns { ok, errors, warnings, resolved, waves }. `waves` are parallelisable
@@ -436,6 +446,7 @@ function resolvePlan(project, specs) {
     for (const f of ['goal', 'verify', 'source']) {
       if (spec[f] !== undefined) oneLine(`${at}: ${f}`, spec[f]);
     }
+    if (spec.verify_expect !== undefined) checkExpect(errors, `${at}: verify_expect`, spec.verify_expect);
     for (const f of ['context', 'done_criteria']) {
       if (spec[f] !== undefined) freeText(`${at}: ${f}`, spec[f]);
     }
@@ -485,6 +496,7 @@ function resolvePlan(project, specs) {
   for (const spec of specs) {
     if (!spec || typeof spec.key !== 'string') continue;
     if (!spec.verify) warnings.push(`task '${spec.key}' has no verify command`);
+    if (spec.verify_expect && !spec.verify) warnings.push(`task '${spec.key}' has verify_expect but no verify command`);
     if (Array.isArray(spec.subtasks) && spec.subtasks.length > MAX_SUBTASKS) {
       warnings.push(`task '${spec.key}' is large: ${spec.subtasks.length} subtasks`);
     }
@@ -497,6 +509,7 @@ function resolvePlan(project, specs) {
     title: spec.title,
     depends_on: taskDeps.get(spec.key),
     verify: spec.verify || '',
+    verify_expect: spec.verify_expect || '',
   }));
   return { ok: true, errors, warnings, resolved, waves };
 }
@@ -526,6 +539,7 @@ function addTasks(project, specs) {
         subtasks: spec.subtasks || [],
         doneCriteria: spec.done_criteria || '',
         verify: spec.verify || '',
+        verifyExpect: spec.verify_expect || '',
         nextStep: dependentsText(plan.resolved, r.id),
       }),
     };
@@ -565,7 +579,7 @@ function addTasks(project, specs) {
 // ---------------------------------------------------------------------------
 
 const HEADERS = ['Status', 'Goal', 'Source', 'Context', 'Dependencies', 'Subtasks',
-                 'Done Criteria', 'Verification', 'Verify', 'Next Step', 'Blockers'];
+                 'Done Criteria', 'Verification', 'Verify', 'Verify-Expect', 'Evidence', 'Next Step', 'Blockers'];
 const HEADER_RE = new RegExp(`^(${HEADERS.join('|')}):`, 'i');
 const headerRe = name => new RegExp(`^${name}:`, 'i');
 
@@ -610,7 +624,7 @@ function assertEditable(project, task) {
 
 /**
  * Edit a pending task in place. `patch` fields: title (renames the file), goal,
- * context, depends_on (task ids), subtasks, done_criteria, verify, source.
+ * context, depends_on (task ids), subtasks, done_criteria, verify, verify_expect, source.
  * Hand-written content outside the patched fields is left untouched.
  */
 function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
@@ -632,7 +646,7 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
     assertEditable(project, task);
   }
 
-  const known = ['title', 'goal', 'context', 'depends_on', 'subtasks', 'done_criteria', 'verify', 'source'];
+  const known = ['title', 'goal', 'context', 'depends_on', 'subtasks', 'done_criteria', 'verify', 'verify_expect', 'source'];
   const unknown = Object.keys(patch).filter(k => !known.includes(k));
   if (unknown.length) throw new WorkflowError(`unknown field(s): ${unknown.join(', ')}.`);
   if (!Object.keys(patch).length) throw new WorkflowError('nothing to update.');
@@ -641,6 +655,7 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
   for (const f of ['title', 'goal', 'verify', 'source']) {
     if (patch[f] !== undefined) checkOneLine(errors, f, patch[f]);
   }
+  if (patch.verify_expect !== undefined) checkExpect(errors, 'verify_expect', patch.verify_expect);
   if (patch.title !== undefined && typeof patch.title === 'string') {
     if (!patch.title.trim() || !slugify(patch.title)) errors.push('title needs at least one letter or digit');
     if (patch.title.length > 80) errors.push('title is longer than 80 characters');
@@ -681,6 +696,7 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
   if (patch.goal !== undefined)          raw = setLineField(raw, 'Goal', patch.goal);
   if (patch.source !== undefined)        raw = setLineField(raw, 'Source', patch.source);
   if (patch.verify !== undefined)        raw = setLineField(raw, 'Verify', patch.verify);
+  if (patch.verify_expect !== undefined) raw = setLineField(raw, 'Verify-Expect', patch.verify_expect);
   if (deps)                              raw = setLineField(raw, 'Dependencies', deps.length ? deps.join(', ') : 'none');
   if (patch.context !== undefined)       raw = setSection(raw, 'Context', patch.context);
   if (patch.done_criteria !== undefined) raw = setSection(raw, 'Done Criteria', patch.done_criteria);
@@ -910,7 +926,7 @@ function removeId(arr, id) {
 }
 
 /** pending → in-progress. Atomically claims the task first. */
-function startTask(project, taskId, { agent = 'agent' } = {}) {
+function startTaskLocked(project, taskId, { agent = 'agent' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
   if (task.status === 'completed') {
@@ -936,39 +952,133 @@ function startTask(project, taskId, { agent = 'agent' } = {}) {
   return { taskId: task.id, status: 'in-progress' };
 }
 
+const VERIFY_TIMEOUT_MS = Number(process.env.AFW_VERIFY_TIMEOUT_MS) || 10 * 60 * 1000;
+const EVIDENCE_TAIL_LINES = 40;
+const EVIDENCE_TAIL_CHARS = 4000;
+
+/** Run one shell command, always capturing output (bounded by a timeout). */
+function runCommand(command, cwd, { inherit = false } = {}) {
+  const res = spawnSync(command, {
+    cwd, shell: true, encoding: 'utf8',
+    stdio: ['inherit', 'pipe', 'pipe'],
+    timeout: VERIFY_TIMEOUT_MS,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const stdout = res.stdout || '';
+  const stderr = res.stderr || '';
+  if (inherit) { // the CLI shows the output; it was captured so it can be matched and recorded
+    process.stdout.write(stdout);
+    process.stderr.write(stderr);
+  }
+  const timedOut = !!(res.error && res.error.code === 'ETIMEDOUT');
+  const code = res.status === null || res.status === undefined ? 1 : res.status;
+  return { code, stdout, stderr, timedOut };
+}
+
+/** Does `output` satisfy a `Verify-Expect:` regex? An empty expectation always matches. */
+function matchesExpect(expect, output) {
+  if (!expect) return true;
+  try { return new RegExp(expect, 'm').test(output); } catch { return false; }
+}
+
+/** Run a command and apply its optional expectation → a verification record. */
+function runCheck(command, expect, cwd, inherit) {
+  const r = runCommand(command, cwd, { inherit });
+  const expectMatched = r.code !== 0 ? null : matchesExpect(expect, `${r.stdout}\n${r.stderr}`);
+  return {
+    ran: true,
+    ok: r.code === 0 && expectMatched !== false,
+    command,
+    code: r.code,
+    expect: expect || '',
+    expectMatched,
+    timedOut: r.timedOut,
+    stdout: r.stdout,
+    stderr: r.stderr,
+  };
+}
+
+function failureReason(label, id, v) {
+  if (v.timedOut) return `${label} timed out for ${id} after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s. Not completed.`;
+  if (v.code === 0) return `${label} failed for ${id}: passed (exit 0) but its output did not match Verify-Expect /${v.expect}/. Not completed.`;
+  return `${label} failed for ${id} (exit ${v.code}). Not completed.`;
+}
+
 /**
  * Run a task's `Verify:` command in the project dir (or, with `workdir`, in the
  * matching directory of a registered git worktree). Returns
- * { ran, ok, command, code, stdout?, stderr? }. `inherit` streams the child's
- * output to this process (used by the CLI); otherwise output is captured.
+ * { ran, ok, command, code, expectMatched?, stdout, stderr }. A task with a
+ * `Verify-Expect:` regex only passes when the output also matches it. `inherit`
+ * echoes the captured output to this process (used by the CLI).
  */
 function verifyTask(project, taskId, { inherit = false, workdir = '' } = {}) {
   requireProjectDir(project);
   const task = findTask(project, taskId);
   const command = task.verify;
   if (!command) return { ran: false, ok: false, command: '', code: null };
+  return runCheck(command, task.verifyExpect, workdir ? resolveWorkdir(project, workdir) : project, inherit);
+}
 
-  const res = spawnSync(command, {
-    cwd: workdir ? resolveWorkdir(project, workdir) : project,
-    shell: true,
-    encoding: 'utf8',
-    stdio: inherit ? 'inherit' : 'pipe',
-  });
-  const code = res.status === null ? 1 : res.status;
-  return {
-    ran: true,
-    ok: code === 0,
-    command,
-    code,
-    stdout: inherit ? undefined : res.stdout,
-    stderr: inherit ? undefined : res.stderr,
-  };
+/** Set (or, with an empty string, clear) the project-wide verify command. */
+function setProjectVerify(project, command = '') {
+  requireProjectDir(project);
+  if (typeof command !== 'string' || /[\r\n]/.test(command)) {
+    throw new WorkflowError('project verify command must be a single-line string.');
+  }
+  const state = readState(project);
+  const c = command.trim();
+  if (c) state.project_verify = c; else delete state.project_verify;
+  writeState(project, state);
+  return { projectVerify: c };
+}
+
+/** Run the project-wide verify command (if configured). */
+function verifyProject(project, { inherit = false, workdir = '' } = {}) {
+  requireProjectDir(project);
+  const command = String(readState(project).project_verify || '').trim();
+  if (!command) return { ran: false, ok: false, command: '', code: null };
+  return runCheck(command, '', workdir ? resolveWorkdir(project, workdir) : project, inherit);
+}
+
+/** HEAD commit of the git checkout containing `dir`, or '' outside a repo. */
+function gitHead(dir) {
+  try {
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', timeout: 5000 });
+    return r.status === 0 ? r.stdout.trim() : '';
+  } catch { return ''; }
+}
+
+/** Bounded tail of a check's combined output, indented so the task parser ignores it. */
+function outputTail(v) {
+  const sep = v.stdout && v.stderr && !v.stdout.endsWith('\n') ? '\n' : '';
+  const text = `${v.stdout || ''}${sep}${v.stderr || ''}`
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '').trimEnd();
+  let lines = text ? text.split('\n') : [];
+  if (lines.length > EVIDENCE_TAIL_LINES) lines = ['...', ...lines.slice(-EVIDENCE_TAIL_LINES)];
+  let out = lines.join('\n');
+  if (out.length > EVIDENCE_TAIL_CHARS) out = '...' + out.slice(-EVIDENCE_TAIL_CHARS);
+  return out ? out.split('\n').map(l => `      | ${l}`.trimEnd()) : [];
+}
+
+/** Body of the task file's `Evidence:` section. Every line is indented. */
+function renderEvidence(checks, commit, at) {
+  const lines = [`  - recorded: ${at}`];
+  if (commit) lines.push(`  - commit: ${commit}`);
+  for (const { label, v } of checks) {
+    lines.push(`  - ${label}: \`${v.command}\` exit ${v.code}${v.expect ? `, matched /${v.expect}/` : ''}`);
+    lines.push(...outputTail(v));
+  }
+  return lines.join('\n');
 }
 
 /**
- * in-progress → completed. Runs the task's Verify command first and refuses to
- * complete on failure. `force` skips verification; `noVerify` completes a task
- * that has no Verify command. Advances current_task to the next runnable task.
+ * in-progress → completed. Runs the task's Verify command AND the project-wide
+ * `project_verify` command (when configured) and refuses to complete if either
+ * fails. `force` skips all verification; `noVerify` completes a task that has no
+ * Verify command of its own (skips the task check) but the project check still
+ * runs. On success the commands, an output tail, exit codes, timestamp and git
+ * commit are recorded in the task file's `Evidence:` section. Advances
+ * current_task to the next runnable task.
  */
 function completeTask(project, taskId, { force = false, noVerify = false, inherit = false, workdir = '' } = {}) {
   requireProjectDir(project);
@@ -976,20 +1086,26 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
   assertTransition(task.status, 'completed');
 
   let verified = false;
-  if (!force && !noVerify) {
-    if (!task.verify) {
-      throw new WorkflowError(
-        `${task.id} has no Verify command. Add a \`Verify:\` line to the task, ` +
-        `or pass --no-verify (accept without a check) or --force.`);
+  const checks = [];
+  if (!force) {
+    if (!noVerify) {
+      if (!task.verify) {
+        throw new WorkflowError(
+          `${task.id} has no Verify command. Add a \`Verify:\` line to the task, ` +
+          `or pass --no-verify (accept without a check) or --force.`);
+      }
+      const v = verifyTask(project, task.id, { inherit, workdir });
+      if (!v.ok) throw new WorkflowError(failureReason('verification', task.id, v), v.code || 1);
+      checks.push({ label: 'task verify', v });
+      verified = true;
     }
-    const v = verifyTask(project, task.id, { inherit, workdir });
-    if (!v.ok) {
-      throw new WorkflowError(
-        `verification failed for ${task.id} (exit ${v.code}). Not completed.`,
-        v.code || 1);
+    const pv = verifyProject(project, { inherit, workdir });
+    if (pv.ran) {
+      if (!pv.ok) throw new WorkflowError(failureReason('project verification', task.id, pv), pv.code || 1);
+      checks.push({ label: 'project verify', v: pv });
     }
-    verified = true;
   }
+  const commit = checks.length ? gitHead(workdir ? resolveWorkdir(project, workdir) : project) : '';
 
   // Verification can be slow, so the lock is taken only for the write phase.
   return withStateLock(project, () => {
@@ -997,6 +1113,11 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
     assertTransition(fresh.status, 'completed'); // state may have moved during verify
     const state = readState(project);
     setTaskStatus(project, fresh, 'completed');
+    if (checks.length) {
+      const full = path.join(tasksDir(project), fresh.file);
+      const raw = setSection(fs.readFileSync(full, 'utf8'), 'Evidence', renderEvidence(checks, commit, new Date().toISOString()));
+      fs.writeFileSync(full, raw, 'utf8');
+    }
     releaseLock(project, fresh.id);
     state.completed_tasks = addUnique(state.completed_tasks, fresh.id);
     state.in_progress = removeId(state.in_progress, fresh.id);
@@ -1006,8 +1127,27 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
     const nextTask = selectNextTask(project, state, fresh.id);
     state.current_task = deriveCurrentTask(project, state);
     writeState(project, state);
-    return { taskId: fresh.id, status: 'completed', nextTask, verified };
+    return { taskId: fresh.id, status: 'completed', nextTask, verified, evidence: checks.length > 0 };
   });
+}
+
+/**
+ * Start a task, then run its Verify once ("red first"): if it ALREADY passes the
+ * check may be vacuous, so `warning` is returned. Never blocks. Runs after the
+ * state lock is released, and costs nothing when the task has no Verify.
+ * Pass `redFirst: false` to skip it.
+ */
+function startTask(project, taskId, { redFirst = true, workdir = '', ...opts } = {}) {
+  const r = withStateLock(project, () => startTaskLocked(project, taskId, opts));
+  if (redFirst) {
+    let v = null;
+    try { v = verifyTask(project, r.taskId, { workdir }); } catch { /* red-first is advisory only */ }
+    if (v && v.ran && v.ok) {
+      r.warning = `${r.taskId}'s Verify already passes before any work was done; the check may be vacuous. ` +
+        'Make it fail first (or tighten it / add Verify-Expect).';
+    }
+  }
+  return r;
 }
 
 /** pending|in-progress → blocked. */
@@ -1245,6 +1385,8 @@ function validateProject(project) {
     errors.push('in_progress must be an array');
   if ('unverified' in state && !isArr(state.unverified))
     errors.push('unverified must be an array');
+  if ('project_verify' in state && !isStr(state.project_verify))
+    errors.push('project_verify must be a string');
   if ('max_task_id' in state && !Number.isInteger(state.max_task_id))
     errors.push('max_task_id must be an integer');
 
@@ -1372,8 +1514,10 @@ module.exports = {
   setTaskStatus,
   selectNextTask,
   runnableTasks,
-  startTask: locked(startTask),
+  startTask,
   verifyTask,
+  verifyProject,
+  setProjectVerify: locked(setProjectVerify),
   completeTask,
   blockTask: locked(blockTask),
   unblockTask: locked(unblockTask),

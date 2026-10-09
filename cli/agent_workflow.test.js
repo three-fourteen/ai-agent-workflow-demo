@@ -480,3 +480,55 @@ test('task defer / reopen, status, next and finalize with deferred tasks', () =>
   assert.equal(run(['task', 'reopen', 'T-002'], dir).status, 1);
   assert.match(run(['--help'], dir).stdout, /task defer/);
 }));
+
+// ---------------------------------------------------------------------------
+// T-005: project-wide verify, evidence, red-first (CLI)
+// ---------------------------------------------------------------------------
+
+test('verify-config sets, shows and clears the project verify; it gates complete', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001-setup.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^Verify:.*$/m, 'Verify: echo task-ok'));
+
+  assert.match(run(['verify-config', 'proj'], dir).stdout, /\(none\)/);
+  const set = run(['verify-config', 'proj', '--set', 'echo proj-broken; exit 2'], dir);
+  assert.equal(set.status, 0);
+  assert.match(set.stdout, /project verify: echo proj-broken/);
+
+  assert.equal(run(['task', 'start', 'proj', 'T-001'], dir).status, 0);
+  const r = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /project verification failed/);
+
+  assert.equal(run(['verify-config', 'proj', '--set', 'echo proj-ok'], dir).status, 0);
+  const ok = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.equal(ok.status, 0);
+  assert.match(readFileSync(f, 'utf8'), /^Evidence:$/m);
+  assert.match(readFileSync(f, 'utf8'), /project verify: `echo proj-ok` exit 0/);
+
+  assert.equal(run(['verify-config', 'proj', '--clear'], dir).status, 0);
+  assert.match(run(['verify-config', 'proj'], dir).stdout, /\(none\)/);
+}));
+
+test('task start prints a red-first warning when Verify already passes', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001-setup.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^Verify:.*$/m, 'Verify: exit 0'));
+  const r = run(['task', 'start', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /in-progress/);
+  assert.match(r.stderr, /Warning: .*already passes/);
+}));
+
+test('task verify enforces Verify-Expect', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001-setup.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^Verify:.*$/m, 'Verify: echo "# pass 0"\n\nVerify-Expect: # pass [1-9]'));
+  run(['task', 'start', 'proj', 'T-001'], dir);
+  const v = run(['task', 'verify', 'proj', 'T-001'], dir);
+  assert.notEqual(v.status, 0);
+  assert.match(v.stdout, /# pass 0/); // output is still shown
+}));
