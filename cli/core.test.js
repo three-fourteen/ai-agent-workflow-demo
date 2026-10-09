@@ -753,3 +753,137 @@ test('writeState replaces the file atomically and leaves no temp files', () => w
   assert.equal(core.readState(dir).phase, 'review');
   assert.deepEqual(readdirSync(join(dir, '.ai')).filter(f => f.endsWith('.tmp')), []);
 }));
+
+// ---------------------------------------------------------------------------
+// T-005: project-wide verify, Verify-Expect, completion evidence, red-first
+// ---------------------------------------------------------------------------
+
+function evidenceProject(dir, taskVerify, { expect = '', projectVerify = '' } = {}) {
+  const proj = join(dir, 'ev');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'Alpha', verify: taskVerify, verify_expect: expect }]);
+  if (projectVerify) core.setProjectVerify(proj, projectVerify);
+  core.startTask(proj, 'T-001', { redFirst: false });
+  return { proj, file: join(proj, 'tasks', 'T-001-alpha.md') };
+}
+
+test('project_verify failure blocks completion even when the task check passes', () => withTmp(dir => {
+  const { proj } = evidenceProject(dir, 'exit 0', { projectVerify: 'echo broken; exit 3' });
+  assert.throws(() => core.completeTask(proj, 'T-001'), /project verification failed for T-001 \(exit 3\)/);
+  assert.equal(core.findTask(proj, 'T-001').status, 'in-progress');
+  core.setProjectVerify(proj, '');
+  assert.equal(core.completeTask(proj, 'T-001').status, 'completed');
+  assert.equal(core.readState(proj).project_verify, undefined);
+}));
+
+test('noVerify skips the task check but never the project check; force skips both', () => withTmp(dir => {
+  const { proj } = evidenceProject(dir, '', { projectVerify: 'exit 1' });
+  assert.throws(() => core.completeTask(proj, 'T-001', { noVerify: true }), /project verification failed/);
+  const r = core.completeTask(proj, 'T-001', { force: true });
+  assert.equal(r.verified, false);
+  assert.deepEqual(core.readState(proj).unverified, ['T-001']);
+}));
+
+test('setProjectVerify validates, persists and is checked by validateProject', () => withTmp(dir => {
+  const { proj } = evidenceProject(dir, 'exit 0');
+  assert.throws(() => core.setProjectVerify(proj, 'a\nb'), /single-line/);
+  core.setProjectVerify(proj, ' npm test ');
+  assert.equal(core.readState(proj).project_verify, 'npm test');
+  assert.equal(core.validateProject(proj).ok, true);
+  const s = core.readState(proj);
+  s.project_verify = 5;
+  core.writeState(proj, s);
+  assert.match(core.validateProject(proj).errors.join('\n'), /project_verify must be a string/);
+}));
+
+test('completion records an Evidence section the parser tolerates', () => withTmp(dir => {
+  const fs = require('fs');
+  const { execFileSync } = require('child_process');
+  const { proj, file } = evidenceProject(dir, 'echo "Status: tricky"; echo done-line', { projectVerify: 'echo project-ok' });
+  execFileSync('git', ['init', '-q'], { cwd: proj });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: proj });
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: proj, encoding: 'utf8' }).trim();
+
+  const r = core.completeTask(proj, 'T-001');
+  assert.equal(r.evidence, true);
+  const raw = fs.readFileSync(file, 'utf8');
+  assert.match(raw, /^Evidence:$/m);
+  assert.match(raw, /- recorded: \d{4}-\d\d-\d\dT/);
+  assert.ok(raw.includes(`- commit: ${sha}`));
+  assert.match(raw, /- task verify: `echo "Status: tricky"; echo done-line` exit 0/);
+  assert.match(raw, /\| done-line/);
+  assert.match(raw, /- project verify: `echo project-ok` exit 0/);
+  // output that looks like a reserved field must not change the parsed task
+  const t = core.findTask(proj, 'T-001');
+  assert.equal(t.status, 'completed');
+  assert.equal(t.verify, 'echo "Status: tricky"; echo done-line');
+  assert.equal(core.validateProject(proj).ok, true);
+}));
+
+test('evidence output tail is bounded', () => withTmp(dir => {
+  const { proj, file } = evidenceProject(dir, 'node -e "for(let i=0;i<500;i++)console.log(\'line\'+i)"');
+  core.completeTask(proj, 'T-001');
+  const raw = require('fs').readFileSync(file, 'utf8');
+  assert.match(raw, /\| line499/);
+  assert.doesNotMatch(raw, /\| line100\b/);
+  assert.ok(raw.split('\n').length < 100);
+}));
+
+test('forced completion records no evidence', () => withTmp(dir => {
+  const { proj, file } = evidenceProject(dir, 'exit 0');
+  core.completeTask(proj, 'T-001', { force: true });
+  assert.doesNotMatch(require('fs').readFileSync(file, 'utf8'), /^Evidence:/m);
+}));
+
+test('verify_expect: a passing but vacuous verify fails completion', () => withTmp(dir => {
+  const { proj } = evidenceProject(dir, 'echo "# pass 0"', { expect: '# pass [1-9]' });
+  assert.equal(core.findTask(proj, 'T-001').verifyExpect, '# pass [1-9]');
+  const v = core.verifyTask(proj, 'T-001');
+  assert.equal(v.ok, false);
+  assert.equal(v.code, 0);
+  assert.equal(v.expectMatched, false);
+  assert.throws(() => core.completeTask(proj, 'T-001'), /did not match Verify-Expect/);
+  assert.equal(core.findTask(proj, 'T-001').status, 'in-progress');
+}));
+
+test('verify_expect completes when output matches, and is validated in plans and updates', () => withTmp(dir => {
+  const { proj } = evidenceProject(dir, 'echo "# pass 7"', { expect: '# pass [1-9]' });
+  assert.equal(core.completeTask(proj, 'T-001').verified, true);
+
+  const bad = core.resolvePlan(dir, [{ key: 'a', title: 'A', verify: 'x', verify_expect: '([' }]);
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors.join('\n'), /valid regular expression/);
+  const multi = core.resolvePlan(dir, [{ key: 'a', title: 'A', verify: 'x', verify_expect: 'a\nb' }]);
+  assert.equal(multi.ok, false);
+
+  core.addTasks(proj, [{ key: 'b', title: 'Beta', verify: 'true' }]);
+  core.updateTask(proj, 'T-002', { verify_expect: 'ok' });
+  assert.equal(core.findTask(proj, 'T-002').verifyExpect, 'ok');
+  assert.throws(() => core.updateTask(proj, 'T-002', { verify_expect: '(' }), /valid regular expression/);
+  core.updateTask(proj, 'T-002', { verify_expect: '' });
+  assert.equal(core.findTask(proj, 'T-002').verifyExpect, '');
+}));
+
+test('startTask warns when Verify already passes (red first), never blocks', () => withTmp(dir => {
+  const proj = join(dir, 'rf');
+  core.initProject(proj, '');
+  core.addTasks(proj, [
+    { key: 'a', title: 'Vacuous', verify: 'exit 0' },
+    { key: 'b', title: 'Red', verify: 'exit 1' },
+    { key: 'c', title: 'None' },
+    { key: 'd', title: 'Skipped', verify: 'exit 0' },
+  ]);
+  const a = core.startTask(proj, 'T-001');
+  assert.equal(a.status, 'in-progress');
+  assert.match(a.warning, /already passes/);
+  assert.equal(core.startTask(proj, 'T-002').warning, undefined);
+  assert.equal(core.startTask(proj, 'T-003').warning, undefined);
+  assert.equal(core.startTask(proj, 'T-004', { redFirst: false }).warning, undefined);
+}));
+
+test('red-first treats output that misses verify_expect as red', () => withTmp(dir => {
+  const proj = join(dir, 'rf2');
+  core.initProject(proj, '');
+  core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'echo "# pass 0"', verify_expect: '# pass [1-9]' }]);
+  assert.equal(core.startTask(proj, 'T-001').warning, undefined);
+}));

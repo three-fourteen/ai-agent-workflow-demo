@@ -47,6 +47,13 @@ older than 30s). Parallel agents can therefore start and complete tasks at the s
 without losing updates. `completeTask` takes the lock only for the write phase, never while
 a task's `Verify:` command runs. New mutators should be exported through `locked(...)`.
 
+**Verification evidence.** `completeTask` runs the task's `Verify:` (which must also match its
+optional `Verify-Expect:` regex) and the optional project-wide `project_verify` command from
+`PROJECT_STATE.json` (`verify-config`); either failing blocks completion. On success an indented
+`Evidence:` section (commands, output tail, exit codes, timestamp, git commit) is written to the
+task file. `startTask` runs Verify once after claiming (outside the lock) and returns a `warning`
+if it already passes. Verify runs are bounded by `AFW_VERIFY_TIMEOUT_MS` (default 10 min).
+
 State transitions are **owned by the CLI**: agents never hand-edit `PROJECT_STATE.json`
 or a task's `Status:` line. Keep that invariant — new behavior belongs behind a command
 and the state machine, not in freehand file edits.

@@ -38,6 +38,7 @@ const TASK_SPEC = {
     subtasks:      { type: 'array', items: { type: 'string' } },
     done_criteria: { type: 'string' },
     verify:        { type: 'string', description: 'Shell command run from the project dir; exit 0 means done.' },
+    verify_expect: { type: 'string', description: 'Single-line regex the verify output must also match, e.g. "# pass [1-9]", so a check that runs zero tests fails.' },
     source:        { type: 'string', description: 'Opaque origin reference, e.g. "asana:1204" or "brief.md#auth".' },
   },
 };
@@ -104,13 +105,17 @@ function buildTools(base) {
     },
     {
       name: 'start_task',
-      description: 'Claim a task and move it pending → in-progress.',
+      description: 'Claim a task and move it pending → in-progress. Then runs its Verify once; if that ALREADY passes, the result carries a `warning` (possibly vacuous check). Never blocks.',
       inputSchema: {
         type: 'object',
-        properties: { ...PROJECT_PROP, ...ID_PROP, agent: { type: 'string', description: 'Agent name recorded on the lock.' } },
+        properties: {
+          ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP,
+          agent: { type: 'string', description: 'Agent name recorded on the lock.' },
+          red_first: { type: 'boolean', description: 'Run Verify once after starting and warn if it already passes (default true).' },
+        },
         required: ['id'],
       },
-      run: a => core.startTask(proj(a), a.id, { agent: a.agent || 'mcp' }),
+      run: a => core.startTask(proj(a), a.id, { agent: a.agent || 'mcp', redFirst: a.red_first !== false, workdir: a.workdir || '' }),
     },
     {
       name: 'verify_task',
@@ -120,7 +125,7 @@ function buildTools(base) {
     },
     {
       name: 'complete_task',
-      description: 'Move a task in-progress → completed. Runs its Verify command first and refuses on failure. (Skipping verification with --force is CLI-only.)',
+      description: 'Move a task in-progress → completed. Runs its Verify command (and the project-wide project_verify command, if set) first and refuses if either fails or the output misses verify_expect. Records an Evidence section (commands, output tail, exit code, time, git commit) in the task file. no_verify skips only the task check, never the project check. (Skipping verification with --force is CLI-only.)',
       inputSchema: {
         type: 'object',
         properties: {
@@ -156,6 +161,18 @@ function buildTools(base) {
       description: 'Release a task\'s lock (e.g. a stale claim from a crashed agent) without changing its status.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
       run: a => core.releaseTask(proj(a), a.id),
+    },
+    {
+      name: 'set_project_verify',
+      description: 'Set (or clear, with an empty string) the project-wide verify command stored in PROJECT_STATE.json. It runs on every task completion in addition to the task\'s own Verify, and a failure blocks completion. Omit command to just read it.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, command: { type: 'string', description: 'Single-line shell command; empty string clears it.' } },
+      },
+      run: a => {
+        if (typeof a.command === 'string') core.setProjectVerify(proj(a), a.command);
+        return { projectVerify: core.readState(proj(a)).project_verify || '' };
+      },
     },
     {
       name: 'create_worktree',
@@ -227,6 +244,7 @@ function buildTools(base) {
           subtasks:      TASK_SPEC.properties.subtasks,
           done_criteria: TASK_SPEC.properties.done_criteria,
           verify:        TASK_SPEC.properties.verify,
+          verify_expect: TASK_SPEC.properties.verify_expect,
           source:        TASK_SPEC.properties.source,
         },
         required: ['id'],

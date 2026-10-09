@@ -248,3 +248,42 @@ test('create_worktree + workdir: verify runs against the task branch', async () 
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// T-005: project-wide verify, verify_expect, evidence, red-first (MCP)
+// ---------------------------------------------------------------------------
+
+test('MCP schemas expose verify_expect, red_first and set_project_verify', async () => {
+  await withServer(async ({ client }) => {
+    const { tools } = await client.listTools();
+    const by = Object.fromEntries(tools.map(t => [t.name, t]));
+    assert.ok(by.add_tasks.inputSchema.properties.tasks.items.properties.verify_expect);
+    assert.ok(by.plan_project.inputSchema.properties.tasks.items.properties.verify_expect);
+    assert.ok(by.update_task.inputSchema.properties.verify_expect);
+    assert.ok(by.start_task.inputSchema.properties.red_first);
+    assert.ok(by.set_project_verify.inputSchema.properties.command);
+  });
+});
+
+test('set_project_verify blocks complete_task; evidence and red-first warning via MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    const set = payload(await client.callTool({ name: 'set_project_verify', arguments: { command: 'exit 4' } }));
+    assert.equal(set.projectVerify, 'exit 4');
+    await client.callTool({ name: 'update_task', arguments: { id: 'T-001', verify: 'echo "# pass 3"', verify_expect: '# pass [1-9]' } });
+
+    const started = payload(await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } }));
+    assert.match(started.warning, /already passes/);
+
+    const blocked = await client.callTool({ name: 'complete_task', arguments: { id: 'T-001' } });
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.content[0].text, /project verification failed/);
+
+    assert.equal(payload(await client.callTool({ name: 'set_project_verify', arguments: { command: '' } })).projectVerify, '');
+    const done = payload(await client.callTool({ name: 'complete_task', arguments: { id: 'T-001' } }));
+    assert.equal(done.verified, true);
+    const file = core.findTask(proj, 'T-001').file;
+    const raw = readFileSync(join(proj, 'tasks', file), 'utf8');
+    assert.match(raw, /^Evidence:$/m);
+    assert.match(raw, /task verify: `echo "# pass 3"` exit 0, matched/);
+  });
+});

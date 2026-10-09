@@ -39,6 +39,10 @@
       "items": { "type": "string", "pattern": "^T-\\d+$" },
       "description": "Task ids completed without a passing Verify check (--force / --no-verify)."
     },
+    "project_verify": {
+      "type": "string",
+      "description": "Optional project-wide check run (in addition to the task's own Verify) on every task completion; a failure blocks completion."
+    },
     "max_task_id": {
       "type": "integer",
       "minimum": 0,

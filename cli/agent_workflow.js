@@ -77,6 +77,14 @@ function agentName(flags) {
 function cmdTaskStart(project, taskId, agent) {
   const r = core.startTask(project, taskId, { agent });
   console.log(`${r.taskId} → in-progress`);
+  if (r.warning) process.stderr.write(`Warning: ${r.warning}\n`);
+}
+
+function cmdVerifyConfig(project, { set, clear }) {
+  if (clear) core.setProjectVerify(project, '');
+  else if (set !== undefined) core.setProjectVerify(project, set);
+  const cmd = core.readState(project).project_verify || '';
+  console.log(cmd ? `project verify: ${cmd}` : 'project verify: (none)');
 }
 
 function cmdTaskComplete(project, taskId, { force, noVerify }) {
@@ -276,6 +284,10 @@ function parseFlags(argv) {
       flags.json = true;
     } else if (arg === '--agent') {
       flags.agent = argv[++i];
+    } else if (arg === '--set') {
+      flags.set = argv[++i];
+    } else if (arg === '--clear') {
+      flags.clear = true;
     } else {
       positional.push(arg);
     }
@@ -297,6 +309,7 @@ Usage:
   agent-workflow release [<project>] <id>
   agent-workflow worktree [<project>] <id>
   agent-workflow status [<project>]
+  agent-workflow verify-config [<project>] [--set "<command>" | --clear]
   agent-workflow validate [<project>]
   agent-workflow finalize [<project>]
   agent-workflow mcp [<project>]
@@ -383,6 +396,10 @@ function main() {
     const { positional } = parseFlags(rest);
     const { project, taskId } = resolveTaskArgs(positional, 'worktree');
     cmdWorktree(project, taskId);
+
+  } else if (command === 'verify-config') {
+    const { flags, positional } = parseFlags(rest);
+    cmdVerifyConfig(positional[0] || '.', { set: flags.set, clear: flags.clear || false });
 
   } else if (command === 'validate') {
     const { positional } = parseFlags(rest);
