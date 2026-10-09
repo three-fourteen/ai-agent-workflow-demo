@@ -1,4 +1,4 @@
-Status: in-progress
+Status: completed
 
 Goal: A passing completion means the whole project still works, and the proof is recorded
 
@@ -23,3 +23,49 @@ Proceed to T-006.
 
 Blockers:
 None
+
+Evidence:
+  - recorded: 2026-10-09T11:27:58.970Z
+  - commit: 9201bfe9a1c7acedf836ae8504894bd0fc63bd99
+  - task verify: `node --test cli/core.test.js cli/agent_workflow.test.js cli/mcp_server.test.js` exit 0
+      | ...
+      |   ...
+      | # Subtest: create_worktree + workdir: verify runs against the task branch
+      | ok 136 - create_worktree + workdir: verify runs against the task branch
+      |   ---
+      |   duration_ms: 416.086951
+      |   type: 'test'
+      |   ...
+      | # Subtest: update_task edits in-progress tasks for the claimant; reset_task returns them to pending
+      | ok 137 - update_task edits in-progress tasks for the claimant; reset_task returns them to pending
+      |   ---
+      |   duration_ms: 231.96477
+      |   type: 'test'
+      |   ...
+      | # Subtest: defer_task and reopen_task drive the deferred status
+      | ok 138 - defer_task and reopen_task drive the deferred status
+      |   ---
+      |   duration_ms: 241.99865
+      |   type: 'test'
+      |   ...
+      | # Subtest: MCP schemas expose verify_expect, red_first and set_project_verify
+      | ok 139 - MCP schemas expose verify_expect, red_first and set_project_verify
+      |   ---
+      |   duration_ms: 230.169816
+      |   type: 'test'
+      |   ...
+      | # Subtest: set_project_verify blocks complete_task; evidence and red-first warning via MCP
+      | ok 140 - set_project_verify blocks complete_task; evidence and red-first warning via MCP
+      |   ---
+      |   duration_ms: 263.199581
+      |   type: 'test'
+      |   ...
+      | 1..140
+      | # tests 140
+      | # suites 0
+      | # pass 140
+      | # fail 0
+      | # cancelled 0
+      | # skipped 0
+      | # todo 0
+      | # duration_ms 5993.222759
