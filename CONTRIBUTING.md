@@ -40,6 +40,13 @@ npm test
 - `cli/mcp_server.js` — MCP tools over the engine.
 - `schema/project-state.schema.json` — JSON Schema for `PROJECT_STATE.json` (editor support).
 
+**Concurrency.** `PROJECT_STATE.json` is written atomically (temp file + rename), and every
+mutating command runs its read-modify-write under `withStateLock` (`.ai/state.lock`, an
+exclusive-create lock that is re-entrant in-process, waits up to 10s, and reclaims a lock
+older than 30s). Parallel agents can therefore start and complete tasks at the same time
+without losing updates. `completeTask` takes the lock only for the write phase, never while
+a task's `Verify:` command runs. New mutators should be exported through `locked(...)`.
+
 State transitions are **owned by the CLI**: agents never hand-edit `PROJECT_STATE.json`
 or a task's `Status:` line. Keep that invariant — new behavior belongs behind a command
 and the state machine, not in freehand file edits.

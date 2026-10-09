@@ -677,3 +677,79 @@ test('createWorktree refuses a completed task', () => withTmp(dir => {
   core.completeTask(proj, 'T-001', { noVerify: true });
   assert.throws(() => core.createWorktree(proj, 'T-001'), /already completed/);
 }));
+
+// ---------------------------------------------------------------------------
+// State file — atomic writes and the cross-process lock
+// ---------------------------------------------------------------------------
+
+const { spawn } = require('node:child_process');
+const { readdirSync, existsSync, utimesSync } = require('node:fs');
+
+/** Run `script` in a fresh node process; resolves with its exit code. */
+function runNode(script) {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+    child.on('close', resolve);
+  });
+}
+
+test('parallel processes starting and completing tasks never lose a state update', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afw-core-'));
+  try {
+    const N = 8;
+    core.initProject(dir, '', { inPlace: true });
+    core.addTasks(dir, Array.from({ length: N }, (_, i) => ({ key: `t${i}`, title: `Task ${i}` })));
+
+    const coreJs = JSON.stringify(join(__dirname, 'core.js'));
+    const codes = await Promise.all(Array.from({ length: N }, (_, i) => runNode(`
+      const core = require(${coreJs});
+      const id = 'T-00${i + 1}';
+      core.startTask(${JSON.stringify(dir)}, id, { agent: 'a${i}' });
+      core.completeTask(${JSON.stringify(dir)}, id, { noVerify: true });
+    `)));
+    assert.deepEqual(codes, Array(N).fill(0));
+
+    const state = core.readState(dir);
+    assert.equal(state.completed_tasks.length, N, `lost updates: ${JSON.stringify(state.completed_tasks)}`);
+    assert.deepEqual(state.in_progress, []);
+    assert.equal(state.unverified.length, N);
+    assert.equal(core.validateProject(dir).ok, true);
+
+    const leftovers = readdirSync(join(dir, '.ai')).filter(f => f.endsWith('.tmp') || f === 'state.lock');
+    assert.deepEqual(leftovers, []);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('withStateLock is re-entrant and releases the lock afterwards', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  const lock = join(dir, '.ai', 'state.lock');
+  const out = core.withStateLock(dir, () => {
+    assert.ok(existsSync(lock));
+    return core.withStateLock(dir, () => { assert.ok(existsSync(lock)); return 'inner'; });
+  });
+  assert.equal(out, 'inner');
+  assert.ok(!existsSync(lock));
+  assert.throws(() => core.withStateLock(dir, () => { throw new Error('boom'); }), /boom/);
+  assert.ok(!existsSync(lock), 'lock is released when fn throws');
+}));
+
+test('a stale state lock left by a dead process is reclaimed', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  const lock = join(dir, '.ai', 'state.lock');
+  writeFileSync(lock, '{"pid":1}');
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  assert.equal(core.withStateLock(dir, () => 'ok'), 'ok');
+  assert.ok(!existsSync(lock));
+}));
+
+test('writeState replaces the file atomically and leaves no temp files', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  const state = core.readState(dir);
+  state.phase = 'review';
+  core.writeState(dir, state);
+  assert.equal(core.readState(dir).phase, 'review');
+  assert.deepEqual(readdirSync(join(dir, '.ai')).filter(f => f.endsWith('.tmp')), []);
+}));

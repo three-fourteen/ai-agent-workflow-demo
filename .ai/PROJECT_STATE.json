@@ -1,0 +1,12 @@
+{
+  "project": "ai-agent-workflow-demo",
+  "phase": "prototype",
+  "current_task": "T-002",
+  "blocked": false,
+  "completed_tasks": [
+    "T-001"
+  ],
+  "description": "Improve the agent-workflow CLI and MCP server based on two real-world usage reviews",
+  "max_task_id": 8,
+  "in_progress": []
+}

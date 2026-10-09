@@ -58,9 +58,75 @@ function readState(projectDir) {
   }
 }
 
-function writeState(projectDir, state) {
-  fs.writeFileSync(statePath(projectDir), JSON.stringify(state, null, 2) + '\n', 'utf8');
+/** Write via a temp file + rename so a reader never sees a half-written file. */
+function writeFileAtomic(file, content) {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    throw err;
+  }
 }
+
+function writeState(projectDir, state) {
+  writeFileAtomic(statePath(projectDir), JSON.stringify(state, null, 2) + '\n');
+}
+
+// --- state lock: serialises read-modify-write across processes -------------
+
+const LOCK_WAIT_MS  = 10_000; // give up after this long
+const LOCK_STALE_MS = 30_000; // a lock older than this belongs to a dead process
+const heldStateLocks = new Map(); // lock path -> re-entry depth (this process)
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `fn` while holding the project's state lock (`.ai/state.lock`, created
+ * with the `wx` flag). Re-entrant within a process. Mutating commands use it so
+ * two concurrent readers of PROJECT_STATE.json can't overwrite each other's
+ * update. Do not hold it across long work such as a task's Verify command.
+ */
+function withStateLock(projectDir, fn) {
+  if (!isProjectDir(projectDir)) return fn(); // nothing to protect yet (e.g. before init)
+  const lock = path.join(projectDir, '.ai', 'state.lock');
+  const depth = heldStateLocks.get(lock) || 0;
+  if (depth > 0) {
+    heldStateLocks.set(lock, depth + 1);
+    try { return fn(); } finally { heldStateLocks.set(lock, depth); }
+  }
+
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }), { flag: 'wx' });
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lock); continue; }
+      } catch { continue; } // vanished between calls: retry immediately
+      if (Date.now() > deadline) {
+        throw new WorkflowError(`timed out waiting for the project state lock (${lock}). Remove it if no other agent is running.`);
+      }
+      sleepSync(10);
+    }
+  }
+
+  heldStateLocks.set(lock, 1);
+  try {
+    return fn();
+  } finally {
+    heldStateLocks.delete(lock);
+    try { fs.unlinkSync(lock); } catch { /* already removed */ }
+  }
+}
+
+/** Wrap a `(project, ...args)` mutator so it runs under the state lock. */
+const locked = fn => (project, ...args) => withStateLock(project, () => fn(project, ...args));
 
 /** Sorted list of task filenames (T-xxx-*.md) for a project. */
 function listTaskFiles(projectDir) {
@@ -209,7 +275,7 @@ function initProject(project, description, { inPlace: forceInPlace = false, name
   fs.writeFileSync(path.join(aiDir, 'WORKING_RULES.md'),    templates.WORKING_RULES,    'utf8');
   fs.writeFileSync(path.join(aiDir, 'TASK_TEMPLATE.md'),    templates.TASK_TEMPLATE,    'utf8');
   fs.writeFileSync(path.join(aiDir, 'TASK_INDEX.json'),     templates.TASK_INDEX + '\n','utf8');
-  fs.writeFileSync(path.join(aiDir, '.gitignore'),          'locks/\n',                 'utf8');
+  fs.writeFileSync(path.join(aiDir, '.gitignore'),          'locks/\nstate.lock\n*.tmp\n',                 'utf8');
 
   const projectName = name || (inPlace ? path.basename(path.resolve(project)) : project);
   const state = {
@@ -882,20 +948,25 @@ function completeTask(project, taskId, { force = false, noVerify = false, inheri
     verified = true;
   }
 
-  const state = readState(project);
-  setTaskStatus(project, task, 'completed');
-  releaseLock(project, task.id);
-  state.completed_tasks = addUnique(state.completed_tasks, task.id);
-  state.in_progress = removeId(state.in_progress, task.id);
-  if (!verified) state.unverified = addUnique(state.unverified, task.id);
+  // Verification can be slow, so the lock is taken only for the write phase.
+  return withStateLock(project, () => {
+    const fresh = findTask(project, taskId);
+    assertTransition(fresh.status, 'completed'); // state may have moved during verify
+    const state = readState(project);
+    setTaskStatus(project, fresh, 'completed');
+    releaseLock(project, fresh.id);
+    state.completed_tasks = addUnique(state.completed_tasks, fresh.id);
+    state.in_progress = removeId(state.in_progress, fresh.id);
+    if (!verified) state.unverified = addUnique(state.unverified, fresh.id);
 
-  let nextTask = null;
-  if (state.current_task === task.id || !state.current_task) {
-    nextTask = selectNextTask(project, state);
-    state.current_task = nextTask;
-  }
-  writeState(project, state);
-  return { taskId: task.id, status: 'completed', nextTask, verified };
+    let nextTask = null;
+    if (state.current_task === fresh.id || !state.current_task) {
+      nextTask = selectNextTask(project, state);
+      state.current_task = nextTask;
+    }
+    writeState(project, state);
+    return { taskId: fresh.id, status: 'completed', nextTask, verified };
+  });
 }
 
 /** pending|in-progress → blocked. */
@@ -1145,6 +1216,8 @@ module.exports = {
   isProjectDir,
   readState,
   writeState,
+  writeFileAtomic,
+  withStateLock,
   listTaskFiles,
   countTasks,
   nextTaskId,
@@ -1155,12 +1228,12 @@ module.exports = {
   listTasks,
   findTask,
   initProject,
-  addTask,
+  addTask: locked(addTask),
   resolvePlan,
-  addTasks,
-  updateTask,
-  removeTask,
-  setBrief,
+  addTasks: locked(addTasks),
+  updateTask: locked(updateTask),
+  removeTask: locked(removeTask),
+  setBrief: locked(setBrief),
   projectSummary,
   stateSummary,
   STATUSES,
@@ -1168,18 +1241,18 @@ module.exports = {
   setTaskStatus,
   selectNextTask,
   runnableTasks,
-  startTask,
+  startTask: locked(startTask),
   verifyTask,
   completeTask,
-  blockTask,
-  unblockTask,
-  claimTask,
-  releaseTask,
+  blockTask: locked(blockTask),
+  unblockTask: locked(unblockTask),
+  claimTask: locked(claimTask),
+  releaseTask: locked(releaseTask),
   listLocks,
   readLock,
   worktreePlan,
   createWorktree,
   validateProject,
-  finalize,
+  finalize: locked(finalize),
   requireProjectDir,
 };

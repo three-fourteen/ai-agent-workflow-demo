@@ -2,6 +2,8 @@ node_modules/
 
 # Per-project runtime lock files (also ignored by each project's .ai/.gitignore)
 .ai/locks/
+.ai/state.lock
+.ai/*.tmp
 
 # OS files
 .DS_Store
