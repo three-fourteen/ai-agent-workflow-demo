@@ -1,4 +1,4 @@
-Status: pending
+Status: in-progress
 
 Goal: A project can finalize while keeping backlog items on record
 

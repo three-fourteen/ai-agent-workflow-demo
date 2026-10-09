@@ -8,5 +8,10 @@
   ],
   "description": "Improve the agent-workflow CLI and MCP server based on two real-world usage reviews",
   "max_task_id": 8,
-  "in_progress": []
+  "in_progress": [
+    "T-002",
+    "T-003",
+    "T-004",
+    "T-005"
+  ]
 }

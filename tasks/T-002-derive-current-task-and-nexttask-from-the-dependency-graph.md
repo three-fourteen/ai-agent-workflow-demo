@@ -1,4 +1,4 @@
-Status: pending
+Status: in-progress
 
 Goal: status and complete never point at a stale or null next task under parallel work
 

@@ -1,4 +1,4 @@
-Status: pending
+Status: in-progress
 
 Goal: Changing scope or the verify command of a claimed task takes one call, not five
 

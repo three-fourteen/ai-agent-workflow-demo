@@ -1,4 +1,4 @@
-Status: pending
+Status: in-progress
 
 Goal: A passing completion means the whole project still works, and the proof is recorded
 
