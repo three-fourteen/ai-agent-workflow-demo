@@ -152,6 +152,22 @@ function buildTools(base) {
       run: a => core.unblockTask(proj(a), a.id),
     },
     {
+      name: 'defer_task',
+      description: 'Move a pending or blocked task to deferred (backlog): kept on record, never runnable, does not block finalize.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, ...ID_PROP, reason: { type: 'string', description: 'Why it is deferred. Single line.' } },
+        required: ['id'],
+      },
+      run: a => core.deferTask(proj(a), a.id, { reason: a.reason || '' }),
+    },
+    {
+      name: 'reopen_task',
+      description: 'Return a deferred task to pending.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.reopenTask(proj(a), a.id),
+    },
+    {
       name: 'release_task',
       description: 'Release a task\'s lock (e.g. a stale claim from a crashed agent) without changing its status.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },

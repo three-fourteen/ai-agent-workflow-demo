@@ -178,6 +178,7 @@ function normalizeStatus(raw) {
   if (s.startsWith('in-progress') || s === 'inprogress') return 'in-progress';
   if (s.startsWith('completed') || s === 'done')          return 'completed';
   if (s.startsWith('blocked'))                            return 'blocked';
+  if (s.startsWith('deferred') || s === 'wontdo' || s === "won't-do") return 'deferred';
   if (s.startsWith('pending') || s === 'todo')            return 'pending';
   return s || 'pending';
 }
@@ -738,6 +739,7 @@ function projectSummary(projectPath) {
     completed: (state.completed_tasks || []).length,
     total: countTasks(projectPath),
     blocked: !!state.blocked,
+    deferred: listTasks(projectPath).filter(t => t.status === 'deferred').map(t => t.id),
   };
 }
 
@@ -813,14 +815,15 @@ function runnableTasks(project, state = null) {
 // State machine — guarded task transitions
 // ---------------------------------------------------------------------------
 
-const STATUSES = ['pending', 'in-progress', 'completed', 'blocked'];
+const STATUSES = ['pending', 'in-progress', 'completed', 'blocked', 'deferred'];
 
 /** Legal transitions: from-status -> set of allowed to-statuses. */
 const TRANSITIONS = {
-  'pending':     new Set(['in-progress', 'blocked']),
+  'pending':     new Set(['in-progress', 'blocked', 'deferred']),
   'in-progress': new Set(['completed', 'blocked']),
-  'blocked':     new Set(['pending', 'in-progress']),
+  'blocked':     new Set(['pending', 'in-progress', 'deferred']),
   'completed':   new Set(),
+  'deferred':    new Set(['pending']),
 };
 
 function assertTransition(from, to) {
@@ -1003,6 +1006,63 @@ function unblockTask(project, taskId) {
   return { taskId: task.id, status: 'pending' };
 }
 
+/**
+ * pending|blocked → deferred: the task is backlog, kept on record but out of the
+ * way (never runnable, never blocks finalize). The reason is stored on a
+ * `Deferred:` line in the task's Blockers section.
+ */
+function deferTask(project, taskId, { reason = '' } = {}) {
+  requireProjectDir(project);
+  const task = findTask(project, taskId);
+  assertTransition(task.status, 'deferred');
+  if (/[\r\n]/.test(reason)) throw new WorkflowError('reason must be a single line.');
+
+  const state = readState(project);
+  const body = `Deferred: ${reason.trim() || '(no reason given)'}`;
+  fs.writeFileSync(path.join(tasksDir(project), task.file), setSection(task.raw, 'Blockers', body), 'utf8');
+  setTaskStatus(project, findTask(project, task.id), 'deferred');
+  releaseLock(project, task.id);
+  state.in_progress = removeId(state.in_progress, task.id);
+  if (!anyBlocked(project)) {
+    state.blocked = false;
+    delete state.block_reason;
+    delete state.unblock_strategy;
+  }
+  if (state.current_task === task.id) state.current_task = selectNextTask(project, state);
+  writeState(project, state);
+  return { taskId: task.id, status: 'deferred' };
+}
+
+/** deferred → pending. Clears the Deferred reason from the Blockers section. */
+function reopenTask(project, taskId) {
+  requireProjectDir(project);
+  const task = findTask(project, taskId);
+  assertTransition(task.status, 'pending');
+
+  if (/^Deferred:/m.test(task.raw)) {
+    fs.writeFileSync(path.join(tasksDir(project), task.file), setSection(task.raw, 'Blockers', 'None'), 'utf8');
+  }
+  setTaskStatus(project, findTask(project, task.id), 'pending');
+  const state = readState(project);
+  if (!state.current_task) state.current_task = selectNextTask(project, state);
+  writeState(project, state);
+  return { taskId: task.id, status: 'pending' };
+}
+
+/**
+ * Live tasks (not completed/deferred) that depend on a deferred task and so
+ * cannot run until it is reopened or the dependency is changed.
+ * Returns [{ id, deferred: [ids] }].
+ */
+function tasksWaitingOnDeferred(project) {
+  const tasks = listTasks(project);
+  const deferred = new Set(tasks.filter(t => t.status === 'deferred').map(t => t.id));
+  return tasks
+    .filter(t => t.status !== 'completed' && t.status !== 'deferred')
+    .map(t => ({ id: t.id, deferred: t.dependencies.filter(d => deferred.has(d)) }))
+    .filter(x => x.deferred.length);
+}
+
 function requireProjectDir(project) {
   if (!isProjectDir(project)) {
     throw new WorkflowError(project === '.'
@@ -1177,6 +1237,9 @@ function validateProject(project) {
       errors.push(`${t.id} is in completed_tasks but its status is '${t.status}'`);
     }
   }
+  for (const w of tasksWaitingOnDeferred(project)) {
+    errors.push(`${w.id} depends on deferred task ${w.deferred.join(', ')}; reopen it or change the dependency`);
+  }
   if (state.blocked && !tasks.some(t => t.status === 'blocked')) {
     errors.push('state.blocked is true but no task is blocked');
   }
@@ -1190,10 +1253,16 @@ function validateProject(project) {
 /** Set the project phase (the one field agents change directly, via command). */
 function finalize(project, phase = 'completed') {
   requireProjectDir(project);
+  const tasks = listTasks(project);
+  const blocked = tasks.filter(t => t.status === 'blocked').map(t => t.id);
+  if (blocked.length) {
+    throw new WorkflowError(
+      `cannot finalize: blocked task(s) ${blocked.join(', ')}. Unblock them, or defer backlog items with \`task defer\`.`);
+  }
   const state = readState(project);
   state.phase = phase;
   writeState(project, state);
-  return { phase };
+  return { phase, deferred: tasks.filter(t => t.status === 'deferred').map(t => t.id) };
 }
 
 /** State summary used by the plan/start prompt builders. */
@@ -1246,6 +1315,9 @@ module.exports = {
   completeTask,
   blockTask: locked(blockTask),
   unblockTask: locked(unblockTask),
+  deferTask: locked(deferTask),
+  reopenTask: locked(reopenTask),
+  tasksWaitingOnDeferred,
   claimTask: locked(claimTask),
   releaseTask: locked(releaseTask),
   listLocks,

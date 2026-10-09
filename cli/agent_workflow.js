@@ -111,6 +111,16 @@ function cmdTaskUnblock(project, taskId) {
   console.log(`${r.taskId} → pending`);
 }
 
+function cmdTaskDefer(project, taskId, reason) {
+  const r = core.deferTask(project, taskId, { reason });
+  console.log(`${r.taskId} → deferred`);
+}
+
+function cmdTaskReopen(project, taskId) {
+  const r = core.reopenTask(project, taskId);
+  console.log(`${r.taskId} → pending`);
+}
+
 function cmdValidate(project) {
   const { ok, errors } = core.validateProject(project);
   if (ok) {
@@ -125,6 +135,7 @@ function cmdValidate(project) {
 function cmdFinalize(project) {
   const r = core.finalize(project, 'completed');
   console.log(`phase → ${r.phase}`);
+  if (r.deferred.length) console.log(`Deferred (kept on record): ${r.deferred.join(', ')}`);
 }
 
 function cmdNext(project, all, json) {
@@ -135,7 +146,10 @@ function cmdNext(project, all, json) {
     return;
   }
   if (chosen.length === 0) {
-    console.log('No runnable task — all tasks are completed, blocked, or waiting on dependencies.');
+    console.log('No runnable task — all tasks are completed, blocked, deferred, or waiting on dependencies.');
+    for (const w of core.tasksWaitingOnDeferred(project)) {
+      console.log(`${w.id} is waiting on deferred ${w.deferred.join(', ')} (reopen it or change the dependency).`);
+    }
     return;
   }
   for (const t of chosen) {
@@ -205,6 +219,7 @@ function cmdStatus(filterProject) {
       `${s.completed}/${s.total}`.padEnd(colW[3]) + ' ' +
       (s.blocked ? 'yes' : 'no')
     );
+    if (s.deferred.length) console.log(`  deferred: ${s.deferred.join(', ')}`);
   }
 }
 
@@ -292,6 +307,8 @@ Usage:
   agent-workflow task verify [<project>] <id>
   agent-workflow task block [<project>] <id> --reason "..." [--strategy "..."]
   agent-workflow task unblock [<project>] <id>
+  agent-workflow task defer [<project>] <id> [--reason "..."]
+  agent-workflow task reopen [<project>] <id>
   agent-workflow next [<project>] [--all] [--json]
   agent-workflow claim [<project>] <id> [--agent NAME]
   agent-workflow release [<project>] <id>
@@ -360,6 +377,14 @@ function main() {
     } else if (sub === 'unblock') {
       const { project, taskId } = resolveTaskArgs(positional, 'unblock');
       cmdTaskUnblock(project, taskId);
+
+    } else if (sub === 'defer') {
+      const { project, taskId } = resolveTaskArgs(positional, 'defer');
+      cmdTaskDefer(project, taskId, flags.reason || '');
+
+    } else if (sub === 'reopen') {
+      const { project, taskId } = resolveTaskArgs(positional, 'reopen');
+      cmdTaskReopen(project, taskId);
 
     } else {
       fail(`unknown task subcommand '${sub}'.\n` + USAGE);

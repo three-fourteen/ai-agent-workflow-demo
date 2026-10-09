@@ -753,3 +753,64 @@ test('writeState replaces the file atomically and leaves no temp files', () => w
   assert.equal(core.readState(dir).phase, 'review');
   assert.deepEqual(readdirSync(join(dir, '.ai')).filter(f => f.endsWith('.tmp')), []);
 }));
+
+// ---------------------------------------------------------------------------
+// T-004: deferred status
+// ---------------------------------------------------------------------------
+
+test('deferred: normalizeStatus, state machine and defer/reopen round trip', () => withTmp(dir => {
+  assert.equal(core.normalizeStatus('Deferred (backlog)'), 'deferred');
+  assert.ok(core.STATUSES.includes('deferred'));
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'One');
+  core.addTask(dir, 'Two');
+  core.deferTask(dir, 'T-002', { reason: 'backlog item' });
+  const t = core.findTask(dir, 'T-002');
+  assert.equal(t.status, 'deferred');
+  assert.match(t.raw, /^Deferred: backlog item$/m);
+  assert.deepEqual(core.runnableTasks(dir).map(x => x.id), ['T-001']);
+  assert.throws(() => core.startTask(dir, 'T-002'), /illegal transition deferred/);
+  assert.throws(() => core.deferTask(dir, 'T-002'), /illegal transition/);
+  assert.ok(core.validateProject(dir).ok);
+  core.reopenTask(dir, 'T-002');
+  const r = core.findTask(dir, 'T-002');
+  assert.equal(r.status, 'pending');
+  assert.doesNotMatch(r.raw, /Deferred:/);
+  assert.deepEqual(core.runnableTasks(dir).map(x => x.id), ['T-001', 'T-002']);
+  assert.throws(() => core.reopenTask(dir, 'T-002'), /illegal transition/);
+}));
+
+test('deferred: a blocked task can be deferred and clears the project block flag', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'One');
+  core.blockTask(dir, 'T-001', { reason: 'x' });
+  assert.equal(core.readState(dir).blocked, true);
+  core.deferTask(dir, 'T-001', { reason: 'really backlog' });
+  assert.equal(core.readState(dir).blocked, false);
+  assert.equal(core.readState(dir).current_task, null);
+  assert.ok(core.validateProject(dir).ok);
+}));
+
+test('deferred: finalize succeeds with deferred tasks but not with blocked ones', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'One');
+  core.addTask(dir, 'Two');
+  core.blockTask(dir, 'T-002', { reason: 'x' });
+  assert.throws(() => core.finalize(dir), /blocked task\(s\) T-002/);
+  core.deferTask(dir, 'T-002', { reason: 'backlog' });
+  const r = core.finalize(dir);
+  assert.equal(r.phase, 'completed');
+  assert.deepEqual(r.deferred, ['T-002']);
+}));
+
+test('deferred: dependents are not runnable and validate reports them', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'One');
+  core.addTask(dir, 'Two', { after: 'T-001' });
+  core.deferTask(dir, 'T-001', { reason: 'later' });
+  assert.deepEqual(core.runnableTasks(dir), []);
+  assert.deepEqual(core.tasksWaitingOnDeferred(dir), [{ id: 'T-002', deferred: ['T-001'] }]);
+  const v = core.validateProject(dir);
+  assert.equal(v.ok, false);
+  assert.match(v.errors.join('\n'), /T-002 depends on deferred task T-001/);
+}));
