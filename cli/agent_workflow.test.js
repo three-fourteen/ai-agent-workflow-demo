@@ -432,3 +432,21 @@ test('plan without args fails outside project dir', () => withTmp(dir => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /not inside a project/);
 }));
+
+// ---------------------------------------------------------------------------
+// T-003: task reset
+// ---------------------------------------------------------------------------
+
+test('task reset returns an in-progress task to pending', () => withTmp(dir => {
+  run(['init'], dir);
+  run(['task', 'add', 'Alpha'], dir);
+  run(['task', 'start', 'T-001', '--agent', 'alice'], dir);
+  const bad = run(['task', 'reset', 'T-001', '--agent', 'bob'], dir);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /claimed by 'alice'/);
+  const r = run(['task', 'reset', 'T-001'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /T-001 → pending/);
+  assert.match(run(['task', 'start', 'T-001'], dir).stdout, /in-progress/);
+  assert.match(run(['--help'], dir).stdout, /task reset/);
+}));

@@ -158,6 +158,12 @@ function buildTools(base) {
       run: a => core.releaseTask(proj(a), a.id),
     },
     {
+      name: 'reset_task',
+      description: 'Move an in-progress task back to pending: releases its claim, removes it from in_progress, keeps its content. Then it can be re-planned or restarted. Pass agent to refuse when someone else holds the claim.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP, agent: { type: 'string' } }, required: ['id'] },
+      run: a => core.resetTask(proj(a), a.id, { agent: a.agent || '' }),
+    },
+    {
       name: 'create_worktree',
       description: 'Isolate a task for parallel work: creates a git worktree on branch task/<id>-<slug>, placed beside the repository. Edit and commit code there; keep making state changes (start/complete/block) through these tools, and pass the returned path as workdir to verify_task / complete_task so Verify runs against the branch.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
@@ -215,7 +221,7 @@ function buildTools(base) {
     },
     {
       name: 'update_task',
-      description: 'Re-plan: edit a pending, unclaimed task in place (title, goal, context, depends_on as task ids, subtasks, done_criteria, verify, source). Only the given fields change.',
+      description: 'Re-plan: edit a pending, unclaimed task in place (or, with agent = the claimant, an in-progress task goal/context/subtasks/done_criteria/verify/source) (title, goal, context, depends_on as task ids, subtasks, done_criteria, verify, source). Only the given fields change.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -228,12 +234,13 @@ function buildTools(base) {
           done_criteria: TASK_SPEC.properties.done_criteria,
           verify:        TASK_SPEC.properties.verify,
           source:        TASK_SPEC.properties.source,
+          agent:         { type: 'string', description: 'Required to edit an in-progress task (goal, context, subtasks, done_criteria, verify, source): must be the claimant.' },
         },
         required: ['id'],
       },
       run: a => {
-        const { project, id, ...patch } = a;
-        return core.updateTask(proj(a), id, patch);
+        const { project, id, agent, ...patch } = a;
+        return core.updateTask(proj(a), id, patch, { agent: agent || '' });
       },
     },
     {

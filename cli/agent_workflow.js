@@ -111,6 +111,11 @@ function cmdTaskUnblock(project, taskId) {
   console.log(`${r.taskId} → pending`);
 }
 
+function cmdTaskReset(project, taskId, agent) {
+  const r = core.resetTask(project, taskId, { agent });
+  console.log(`${r.taskId} → pending`);
+}
+
 function cmdValidate(project) {
   const { ok, errors } = core.validateProject(project);
   if (ok) {
@@ -292,6 +297,7 @@ Usage:
   agent-workflow task verify [<project>] <id>
   agent-workflow task block [<project>] <id> --reason "..." [--strategy "..."]
   agent-workflow task unblock [<project>] <id>
+  agent-workflow task reset [<project>] <id> [--agent NAME]
   agent-workflow next [<project>] [--all] [--json]
   agent-workflow claim [<project>] <id> [--agent NAME]
   agent-workflow release [<project>] <id>
@@ -360,6 +366,10 @@ function main() {
     } else if (sub === 'unblock') {
       const { project, taskId } = resolveTaskArgs(positional, 'unblock');
       cmdTaskUnblock(project, taskId);
+
+    } else if (sub === 'reset') {
+      const { project, taskId } = resolveTaskArgs(positional, 'reset');
+      cmdTaskReset(project, taskId, flags.agent || '');
 
     } else {
       fail(`unknown task subcommand '${sub}'.\n` + USAGE);
