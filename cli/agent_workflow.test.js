@@ -450,3 +450,33 @@ test('task reset returns an in-progress task to pending', () => withTmp(dir => {
   assert.match(run(['task', 'start', 'T-001'], dir).stdout, /in-progress/);
   assert.match(run(['--help'], dir).stdout, /task reset/);
 }));
+
+// ---------------------------------------------------------------------------
+// T-004: deferred status
+// ---------------------------------------------------------------------------
+
+test('task defer / reopen, status, next and finalize with deferred tasks', () => withTmp(dir => {
+  run(['init'], dir);
+  run(['task', 'add', 'One'], dir);
+  run(['task', 'add', 'Two', '--after', 'T-001'], dir);
+  run(['task', 'block', 'T-002', '--reason', 'x'], dir);
+  assert.equal(run(['finalize'], dir).status, 1, 'blocked task stops finalize');
+
+  let r = run(['task', 'defer', 'T-002', '--reason', 'backlog'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /T-002 → deferred/);
+  assert.match(run(['status'], dir).stdout, /deferred: T-002/);
+
+  run(['task', 'start', 'T-001'], dir);
+  run(['task', 'complete', 'T-001', '--no-verify'], dir);
+  r = run(['next'], dir);
+  assert.match(r.stdout, /No runnable task/);
+  r = run(['finalize'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /Deferred \(kept on record\): T-002/);
+
+  r = run(['task', 'reopen', 'T-002'], dir);
+  assert.match(r.stdout, /T-002 → pending/);
+  assert.equal(run(['task', 'reopen', 'T-002'], dir).status, 1);
+  assert.match(run(['--help'], dir).stdout, /task defer/);
+}));

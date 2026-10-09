@@ -22,7 +22,7 @@
     },
     "blocked": {
       "type": "boolean",
-      "description": "True when any task is blocked."
+      "description": "True when any task is blocked. Deferred (backlog) tasks do not count: they never block finalize."
     },
     "completed_tasks": {
       "type": "array",

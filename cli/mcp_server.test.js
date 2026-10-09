@@ -269,3 +269,21 @@ test('update_task edits in-progress tasks for the claimant; reset_task returns t
     assert.deepEqual(core.readState(proj).in_progress, []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T-004: deferred status
+// ---------------------------------------------------------------------------
+
+test('defer_task and reopen_task drive the deferred status', async () => {
+  await withServer(async ({ client, proj }) => {
+    const { tools } = await client.listTools();
+    assert.ok(tools.some(t => t.name === 'defer_task') && tools.some(t => t.name === 'reopen_task'));
+    const d = payload(await client.callTool({ name: 'defer_task', arguments: { id: 'T-002', reason: 'backlog' } }));
+    assert.equal(d.status, 'deferred');
+    assert.equal(core.findTask(proj, 'T-002').status, 'deferred');
+    const bad = await client.callTool({ name: 'defer_task', arguments: { id: 'T-002' } });
+    assert.equal(bad.isError, true);
+    const o = payload(await client.callTool({ name: 'reopen_task', arguments: { id: 'T-002' } }));
+    assert.equal(o.status, 'pending');
+  });
+});
