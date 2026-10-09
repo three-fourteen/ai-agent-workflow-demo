@@ -5,7 +5,7 @@
  * Kept in one place so both the CLI and the core engine share a single source.
  *
  * The workflow is CLI-owned: state in PROJECT_STATE.json and each task's
- * `Status:` line are mutated ONLY through `agent-workflow` commands, never by
+ * `status` field are mutated ONLY through `agent-workflow` commands, never by
  * hand. This keeps every transition validated and every completion verified.
  */
 
@@ -36,7 +36,7 @@ Do not explore the repository unnecessarily. Do not start implementing.
 const AGENT_START_HERE = `\
 This repository uses an AI-native development workflow. State lives in Git and is
 owned by the \`agent-workflow\` (afw) CLI. Do NOT hand-edit PROJECT_STATE.json or a
-task's \`Status:\` line — change state ONLY through commands, so every transition is
+task's \`status\` field — change state ONLY through commands, so every transition is
 validated and every completion is verified.
 
 You are in EXECUTION mode.
@@ -64,7 +64,7 @@ const WORKING_RULES = `\
 Rules for AI agents working in this repository.
 
 State is owned by the \`agent-workflow\` (afw) CLI. Never hand-edit PROJECT_STATE.json
-or a task's \`Status:\` line — use commands so transitions stay valid.
+or a task's \`status\` field — use commands so transitions stay valid.
 
 ## Task lifecycle (state machine)
 
@@ -122,25 +122,24 @@ Always run \`agent-workflow validate\` before finishing.
 `;
 
 const TASK_TEMPLATE = `\
-Status: pending | in-progress | completed | blocked
+---
+title: "Short title"
+status: pending            # pending | in-progress | completed | blocked | deferred
+goal: "One line: what this task achieves"
+dependencies: []           # e.g. ["T-001", "T-002"]
+verify: ""                 # shell command; must exit 0 for the task to complete
+---
 
-Goal
+## Context
 
-Context
+## Subtasks
 
-Dependencies: none
+## Done Criteria
 
-Subtasks
+## Next Step
 
-Done Criteria
-
-Verification
-
-Verify:
-
-Next Step
-
-Blockers
+## Blockers
+None
 `;
 
 const TASK_INDEX = JSON.stringify(

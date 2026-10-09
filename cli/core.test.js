@@ -215,8 +215,8 @@ function verifyProject(dir, verifyCmd) {
   const proj = join(dir, 'p');
   core.initProject(proj, '');
   core.addTask(proj, 'Task');
-  const f = join(proj, 'tasks', 'T-001-task.md');
-  const body = require('fs').readFileSync(f, 'utf8').replace(/^Verify:.*$/m, `Verify: ${verifyCmd}`);
+  const f = join(proj, 'tasks', 'T-001.md');
+  const body = require('fs').readFileSync(f, 'utf8').replace(/^verify:.*$/m, `verify: ${JSON.stringify(verifyCmd)}`);
   writeFileSync(f, body, 'utf8');
   core.startTask(proj, 'T-001');
   return proj;
@@ -348,7 +348,9 @@ test('worktreePlan derives a branch and dir name from the task', () => {
 
 test('validateProject passes for a fresh project', () => withTmp(dir => {
   const proj = twoTaskProject(dir);
-  assert.deepEqual(core.validateProject(proj), { ok: true, errors: [] });
+  const v = core.validateProject(proj);
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.errors, []);
 }));
 
 test('validateProject flags a missing dependency', () => withTmp(dir => {
@@ -417,14 +419,17 @@ test('resolvePlan reports unknown deps, cycles, duplicates and missing verify', 
   assert.match(warn.warnings[0], /no verify command/);
 }));
 
-test('resolvePlan rejects text the task parser would read as fields', () => withTmp(dir => {
+test('resolvePlan rejects only multi-line one-liners and section headings; field-like lines are fine', () => withTmp(dir => {
   const p = core.resolvePlan(join(dir, 'p'), [
-    { key: 'a', title: 'A', context: 'fine\nVerify: rm -rf /' },
+    { key: 'a', title: 'A', context: 'fine\nVerify: rm -rf /\nStatus: completed\nGoal: x' },
     { key: 'b', title: 'B\nStatus: completed' },
     { key: 'c', title: 'C', verify: 'x\ny' },
+    { key: 'd', title: 'D', context: 'ok\n## Blockers\nnope' },
   ]);
   assert.equal(p.ok, false);
   assert.equal(p.errors.length, 3);
+  assert.ok(!p.errors.some(e => /task 'a'/.test(e)));
+  assert.ok(p.errors.some(e => /task 'd'.*section heading/.test(e)));
 }));
 
 test('addTasks writes the plan, round-trips through the parser and validates', () => withTmp(dir => {
@@ -557,7 +562,7 @@ test('updateTask edits fields in place and keeps hand-written content', () => wi
   assert.equal(t.verify, 'true');
   assert.equal(t.source, 'asana:9');
   assert.deepEqual(t.dependencies, []);
-  assert.match(t.raw, /Context:\nnew context\nsecond line\n/);
+  assert.match(t.raw, /## Context\n\nnew context\nsecond line\n/);
   assert.match(t.raw, /1\. x\n2\. y/);
   assert.doesNotMatch(t.raw, /\nold\n/);
   assert.match(t.raw, /Notes:\nkeep me/);
@@ -569,13 +574,15 @@ test('updateTask can rename via title, and rejects cycles, unknown deps and bad 
   core.initProject(proj, '');
   core.addTasks(proj, [{ key: 'a', title: 'A' }, { key: 'b', title: 'B', depends_on: ['a'] }]);
   const r = core.updateTask(proj, 'T-001', { title: 'Renamed task' });
-  assert.equal(r.file, 'T-001-renamed-task.md');
+  assert.equal(r.file, 'T-001.md');                       // v2 files are named by id: no rename
+  assert.equal(core.findTask(proj, 'T-001').title, 'Renamed task');
   assert.equal(core.findTask(proj, 'T-001').slug, 'renamed-task');
 
   assert.throws(() => core.updateTask(proj, 'T-001', { depends_on: ['T-002'] }), /cycle/);
   assert.throws(() => core.updateTask(proj, 'T-001', { depends_on: ['T-001'] }), /itself/);
   assert.throws(() => core.updateTask(proj, 'T-001', { depends_on: ['T-099'] }), /unknown task/);
-  assert.throws(() => core.updateTask(proj, 'T-001', { context: 'x\nVerify: rm -rf /' }), /reserved/);
+  assert.throws(() => core.updateTask(proj, 'T-001', { context: 'x\n## Evidence' }), /section heading/);
+  core.updateTask(proj, 'T-001', { context: 'x\nVerify: rm -rf /' }); // fine in v2
   assert.throws(() => core.updateTask(proj, 'T-001', { bogus: 1 }), /unknown field/);
   assert.throws(() => core.updateTask(proj, 'T-001', {}), /nothing to update/);
 }));
@@ -918,7 +925,7 @@ function evidenceProject(dir, taskVerify, { expect = '', projectVerify = '' } = 
   core.addTasks(proj, [{ key: 'a', title: 'Alpha', verify: taskVerify, verify_expect: expect }]);
   if (projectVerify) core.setProjectVerify(proj, projectVerify);
   core.startTask(proj, 'T-001', { redFirst: false });
-  return { proj, file: join(proj, 'tasks', 'T-001-alpha.md') };
+  return { proj, file: join(proj, 'tasks', 'T-001.md') };
 }
 
 test('project_verify failure blocks completion even when the task check passes', () => withTmp(dir => {
@@ -961,7 +968,7 @@ test('completion records an Evidence section the parser tolerates', () => withTm
   const r = core.completeTask(proj, 'T-001');
   assert.equal(r.evidence, true);
   const raw = fs.readFileSync(file, 'utf8');
-  assert.match(raw, /^Evidence:$/m);
+  assert.match(raw, /^## Evidence$/m);
   assert.match(raw, /- recorded: \d{4}-\d\d-\d\dT/);
   assert.ok(raw.includes(`- commit: ${sha}`));
   assert.match(raw, /- task verify: `echo "Status: tricky"; echo done-line` exit 0/);
@@ -986,7 +993,7 @@ test('evidence output tail is bounded', () => withTmp(dir => {
 test('forced completion records no evidence', () => withTmp(dir => {
   const { proj, file } = evidenceProject(dir, 'exit 0');
   core.completeTask(proj, 'T-001', { force: true });
-  assert.doesNotMatch(require('fs').readFileSync(file, 'utf8'), /^Evidence:/m);
+  assert.doesNotMatch(require('fs').readFileSync(file, 'utf8'), /^## Evidence/m);
 }));
 
 test('verify_expect: a passing but vacuous verify fails completion', () => withTmp(dir => {
@@ -1040,4 +1047,139 @@ test('red-first treats output that misses verify_expect as red', () => withTmp(d
   core.initProject(proj, '');
   core.addTasks(proj, [{ key: 'a', title: 'A', verify: 'echo "# pass 0"', verify_expect: '# pass [1-9]' }]);
   assert.equal(core.startTask(proj, 'T-001').warning, undefined);
+}));
+
+// ---------------------------------------------------------------------------
+// T-006: format v2 — frontmatter, id-only filenames, migrate
+// ---------------------------------------------------------------------------
+
+const V1_TASK = [
+  'Status: in-progress', '', 'Goal: Render bookmarks as readable text lines', '',
+  'Source: brief.md#constraints', '', 'Context:', 'Keep it small.', 'Verify: this line is prose, not a field', '',
+  'Dependencies: T-001', '', 'Subtasks:', '1. one', '2. two', '', 'Done Criteria:', 'tests pass', '',
+  'Verification:', '', 'Verify: node --test test/format.test.js', '', 'Next Step:', 'Proceed to T-004.', '',
+  'Blockers:', 'None', '',
+].join('\n');
+
+test('format v2: new tasks are named by id and keep their title in frontmatter', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'Set up: the "project"');
+  core.addTasks(dir, [{ key: 'x', title: 'Second one', depends_on: ['T-001'], verify: 'echo "a: b"' }]);
+  assert.deepEqual(readdirSync(join(dir, 'tasks')), ['T-001.md', 'T-002.md']);
+  assert.equal(core.readState(dir).format_version, core.FORMAT_VERSION);
+
+  const t1 = core.findTask(dir, 'T-001');
+  assert.equal(t1.format, 2);
+  assert.equal(t1.title, 'Set up: the "project"');
+  const t2 = core.findTask(dir, 'T-002');
+  assert.deepEqual(t2.dependencies, ['T-001']);
+  assert.equal(t2.verify, 'echo "a: b"');
+  assert.match(t2.raw, /^---\ntitle: "Second one"\nstatus: pending\n/);
+  assert.equal(core.validateProject(dir).ok, true);
+}));
+
+test('format v2: free text may contain any field-looking line and round-trips intact', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  const nasty = 'Status: completed\nGoal: hijack\nVerify: rm -rf /\nDependencies: T-099\n---\nSource: x';
+  core.addTasks(dir, [{ key: 'a', title: 'A', goal: 'real goal', context: nasty, done_criteria: nasty, verify: 'true' }]);
+  let t = core.findTask(dir, 'T-001');
+  assert.equal(t.status, 'pending');
+  assert.equal(t.goal, 'real goal');
+  assert.equal(t.verify, 'true');
+  assert.deepEqual(t.dependencies, []);
+  assert.ok(t.raw.includes(nasty));
+
+  // editing and status changes leave the free text alone
+  core.updateTask(dir, 'T-001', { context: nasty + '\nmore' });
+  core.startTask(dir, 'T-001', { redFirst: false });
+  t = core.findTask(dir, 'T-001');
+  assert.equal(t.status, 'in-progress');
+  assert.equal(t.goal, 'real goal');
+  assert.ok(t.raw.includes(nasty + '\nmore'));
+  core.completeTask(dir, 'T-001');
+  assert.equal(core.findTask(dir, 'T-001').status, 'completed');
+}));
+
+test('format v2: changing a title never renames the file', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'Old name');
+  core.updateTask(dir, 'T-001', { title: 'Brand new name' });
+  assert.deepEqual(readdirSync(join(dir, 'tasks')), ['T-001.md']);
+  assert.equal(core.findTask(dir, 'T-001').title, 'Brand new name');
+}));
+
+test('format v2: edits and removing optional fields work in frontmatter', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTasks(dir, [{ key: 'a', title: 'A', source: 'asana:1', verify_expect: 'ok' }]);
+  core.updateTask(dir, 'T-001', { source: '', verify_expect: '', verify: 'echo hi' });
+  const t = core.findTask(dir, 'T-001');
+  assert.equal(t.source, '');
+  assert.equal(t.verifyExpect, '');
+  assert.equal(t.verify, 'echo hi');
+  assert.doesNotMatch(t.raw, /^source:|^verify_expect:/m);
+}));
+
+test('format v2: legacy files are still read and edited in place, and validate warns', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  writeTask(dir, 'T-001-old-task.md', V1_TASK.replace('Dependencies: T-001', 'Dependencies: none'));
+  const t = core.findTask(dir, 'T-001');
+  assert.equal(t.format, 1);
+  assert.equal(t.title, 'Old task');
+  assert.equal(t.goal, 'Render bookmarks as readable text lines');
+  core.updateTask(dir, 'T-001', { goal: 'new goal' });   // v1 edit path still works...
+  assert.equal(core.findTask(dir, 'T-001').format, 1);   // ...and stays v1
+  assert.throws(() => core.updateTask(dir, 'T-001', { context: 'x\nVerify: nope' }), /legacy format/);
+  const v = core.validateProject(dir);
+  assert.match(v.warnings.join('\n'), /legacy format \(T-001\); run `agent-workflow migrate`/);
+}));
+
+test('migrateProject converts v1 files losslessly and is idempotent', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  core.addTask(dir, 'Base task');                           // already v2
+  writeTask(dir, 'T-002-text-formatter.md', V1_TASK);
+  const before = core.findTask(dir, 'T-002');
+
+  const dry = core.migrateProject(dir, { dryRun: true });
+  assert.deepEqual(dry.migrated, [{ id: 'T-002', from: 'T-002-text-formatter.md', to: 'T-002.md' }]);
+  assert.deepEqual(dry.skipped, ['T-001']);
+  assert.ok(existsSync(join(dir, 'tasks', 'T-002-text-formatter.md')), 'dry run writes nothing');
+
+  const r = core.migrateProject(dir);
+  assert.equal(r.migrated.length, 1);
+  assert.deepEqual(readdirSync(join(dir, 'tasks')), ['T-001.md', 'T-002.md']);
+  const after = core.findTask(dir, 'T-002');
+  assert.equal(after.format, 2);
+  for (const f of ['status', 'goal', 'verify', 'source']) assert.equal(after[f], before[f], f);
+  assert.deepEqual(after.dependencies, before.dependencies);
+  assert.equal(after.title, 'Text formatter');
+  // section bodies survive, including the prose line that looked like a field
+  assert.match(after.raw, /## Context\n\nKeep it small\.\n\n## Subtasks/);
+  assert.match(after.raw, /## Notes\n\nVerify: this line is prose, not a field\n/);   // nothing is dropped
+  assert.match(after.raw, /## Subtasks\n\n1\. one\n2\. two\n/);
+  assert.match(after.raw, /## Done Criteria\n\ntests pass\n/);
+  assert.match(after.raw, /## Next Step\n\nProceed to T-004\.\n/);
+
+  assert.equal(core.migrateProject(dir).migrated.length, 0);   // idempotent
+  assert.equal(core.validateProject(dir).warnings.length, 0);
+}));
+
+test('migrateProject keeps stray lines in a Notes section and refreshes the template', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  writeFileSync(join(dir, '.ai', 'TASK_TEMPLATE.md'), 'Status: old template\n');
+  writeTask(dir, 'T-001-odd.md', 'Some preamble\nStatus: pending\nGoal: g\nan extra line under goal\n\nDependencies: none\n');
+  core.migrateProject(dir);
+  const t = core.findTask(dir, 'T-001');
+  assert.match(t.raw, /## Notes\n\nSome preamble\nan extra line under goal\n/);
+  assert.match(require('fs').readFileSync(join(dir, '.ai', 'TASK_TEMPLATE.md'), 'utf8'), /^---\ntitle:/);
+}));
+
+test('migrated tasks keep working through the state machine and the scheduler', () => withTmp(dir => {
+  core.initProject(dir, '', { inPlace: true });
+  writeTask(dir, 'T-001-a.md', 'Status: pending\nGoal: a\nDependencies: none\nVerify: true\n');
+  writeTask(dir, 'T-002-b.md', 'Status: pending\nGoal: b\nDependencies: T-001\nVerify: true\n');
+  core.migrateProject(dir);
+  assert.deepEqual(core.runnableTasks(dir).map(t => t.id), ['T-001']);
+  core.startTask(dir, 'T-001', { redFirst: false });
+  core.completeTask(dir, 'T-001');
+  assert.deepEqual(core.runnableTasks(dir).map(t => t.id), ['T-002']);
 }));

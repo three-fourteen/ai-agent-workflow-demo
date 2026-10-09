@@ -43,6 +43,11 @@
       "type": "string",
       "description": "Optional project-wide check run (in addition to the task's own Verify) on every task completion; a failure blocks completion."
     },
+    "format_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Task file format: 2 = YAML frontmatter + ## sections, files named by id (T-001.md). Absent or 1 = legacy loose Key: value files; run `agent-workflow migrate`."
+    },
     "max_task_id": {
       "type": "integer",
       "minimum": 0,

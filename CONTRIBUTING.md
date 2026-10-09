@@ -23,7 +23,7 @@ without it.
 npm test
 ```
 
-76 tests using Node's built-in `node:test` runner, across:
+150 tests using Node's built-in `node:test` runner, across:
 
 - `cli/core.test.js` — the engine: task parsing, the state machine, verification, the scheduler, locks, and validation
 - `cli/agent_workflow.test.js` — the CLI surface: every command, flags, and error paths
@@ -54,8 +54,14 @@ optional `Verify-Expect:` regex) and the optional project-wide `project_verify` 
 task file. `startTask` runs Verify once after claiming (outside the lock) and returns a `warning`
 if it already passes. Verify runs are bounded by `AFW_VERIFY_TIMEOUT_MS` (default 10 min).
 
+**Task file format.** Tasks are `tasks/T-007.md`: JSON-valued YAML frontmatter for one-line
+fields, `## Section` headings for the body (`parseTaskText`, `renderTask`, `setField`,
+`setSection` in `core.js`). Legacy v1 files are still read and edited in place; `migrate`
+converts them. A format change must bump `FORMAT_VERSION`, keep reading the old format, and
+ship its conversion in `migrateProject` with the field-by-field safety check.
+
 State transitions are **owned by the CLI**: agents never hand-edit `PROJECT_STATE.json`
-or a task's `Status:` line. Keep that invariant — new behavior belongs behind a command
+or a task's `status` field. Keep that invariant — new behavior belongs behind a command
 and the state machine, not in freehand file edits.
 
 ## Adding a new command

@@ -284,8 +284,14 @@ function buildTools(base) {
       run: a => core.removeTask(proj(a), a.id),
     },
     {
+      name: 'migrate_project',
+      description: 'Convert legacy (format v1) task files to format v2: YAML frontmatter, ## sections, files named by id alone. Verified field-by-field before anything is written. Use dry_run to preview.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, dry_run: { type: 'boolean' } } },
+      run: a => core.migrateProject(proj(a), { dryRun: !!a.dry_run }),
+    },
+    {
       name: 'validate',
-      description: 'Validate the state file and task graph. Returns { ok, errors }.',
+      description: 'Validate the state file and task graph. Returns { ok, errors, warnings } (warnings flag legacy-format task files).',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP } },
       run: a => core.validateProject(proj(a)),
     },

@@ -169,6 +169,64 @@ function taskIdFromFilename(filename) {
 }
 
 // ---------------------------------------------------------------------------
+// Task file format v2: YAML frontmatter (one-line fields) + a free-form body
+// ---------------------------------------------------------------------------
+//
+//   ---
+//   title: "Short title"
+//   status: pending
+//   goal: "One line"
+//   dependencies: ["T-001"]
+//   verify: "npm test"
+//   ---
+//   ## Context
+//   ...free text, any line allowed...
+//
+// Frontmatter values are written as JSON (a YAML subset), so any character is
+// safe in a value and no YAML library is needed. v1 files (loose `Key: value`
+// lines) are still read and edited in place; `migrate` converts them.
+
+const FORMAT_VERSION = 2;
+const SECTION_NAMES = ['Context', 'Subtasks', 'Done Criteria', 'Verification', 'Next Step', 'Blockers', 'Evidence'];
+const SECTION_RE = new RegExp(`^##\\s+(${SECTION_NAMES.join('|')})\\s*$`, 'i');
+/** Body headings v2 sections are delimited by; free text must not contain them. */
+const RESERVED_HEADING_RE = new RegExp(`^##\\s+(${SECTION_NAMES.join('|')})\\s*$`, 'im');
+const FM_KEYS = { status: 'status', goal: 'goal', source: 'source', verify: 'verify',
+                  verify_expect: 'verify_expect', dependencies: 'dependencies', title: 'title' };
+
+function hasFrontmatter(raw) { return /^---\r?\n/.test(raw); }
+
+/** Split a v2 file into { front: [lines], body: string }. */
+function splitFrontmatter(raw) {
+  const lines = raw.split(/\r?\n/);
+  const end = lines.indexOf('---', 1);
+  if (lines[0] !== '---' || end < 0) return { front: [], body: raw };
+  return { front: lines.slice(1, end), body: lines.slice(end + 1).join('\n') };
+}
+
+function fmEncode(v) { return JSON.stringify(v); }
+function fmDecode(text) {
+  const t = String(text).trim();
+  if (/^["\[]/.test(t)) { try { return JSON.parse(t); } catch { /* fall through to raw text */ } }
+  return t;
+}
+
+function parseFrontmatter(frontLines) {
+  const out = {};
+  for (const line of frontLines) {
+    const m = /^([a-z_]+):\s*(.*)$/.exec(line);
+    if (m) out[m[1]] = fmDecode(m[2]);
+  }
+  return out;
+}
+
+/** "project-setup" → "Project setup" (v1 files only kept their title as a slug). */
+function humanizeSlug(slug) {
+  const t = String(slug || '').replace(/-+/g, ' ').trim();
+  return t ? t[0].toUpperCase() + t.slice(1) : '';
+}
+
+// ---------------------------------------------------------------------------
 // Task file parsing
 // ---------------------------------------------------------------------------
 
@@ -206,29 +264,49 @@ function parseDependencies(raw) {
  * Returns { id, file, slug, status, dependencies, goal, verify, source, raw }.
  */
 function parseTaskFile(fullPath) {
-  const raw = fs.readFileSync(fullPath, 'utf8');
-  const filename = path.basename(fullPath);
-  const fields = { status: 'pending', dependencies: [], goal: '', verify: '', verifyExpect: '', source: '' };
+  return parseTaskText(fs.readFileSync(fullPath, 'utf8'), path.basename(fullPath));
+}
 
-  for (const line of raw.split(/\r?\n/)) {
-    const ve = /^Verify-Expect:\s*(.*)$/i.exec(line);
-    if (ve) { fields.verifyExpect = ve[1].trim(); continue; }
-    const m = /^([A-Za-z][A-Za-z ]*?):\s*(.*)$/.exec(line);
-    if (!m) continue;
-    const key = m[1].trim().toLowerCase();
-    const val = m[2].trim();
-    if (key === 'status')            fields.status = normalizeStatus(val);
-    else if (key === 'dependencies') fields.dependencies = parseDependencies(val);
-    else if (key === 'goal')         fields.goal = val;
-    else if (key === 'verify')       fields.verify = val;
-    else if (key === 'source')       fields.source = val;
+/** Parse task file text (format v1 or v2) as if it were stored under `filename`. */
+function parseTaskText(raw, filename) {
+  const fields = { status: 'pending', dependencies: [], goal: '', verify: '', verifyExpect: '', source: '', title: '' };
+  const v2 = hasFrontmatter(raw);
+
+  if (v2) {
+    const fm = parseFrontmatter(splitFrontmatter(raw).front);
+    if (fm.status !== undefined)     fields.status = normalizeStatus(fm.status);
+    if (fm.dependencies !== undefined) {
+      fields.dependencies = parseDependencies(Array.isArray(fm.dependencies) ? fm.dependencies.join(',') : fm.dependencies);
+    }
+    for (const [k, to] of [['goal', 'goal'], ['verify', 'verify'], ['verify_expect', 'verifyExpect'],
+                           ['source', 'source'], ['title', 'title']]) {
+      if (typeof fm[k] === 'string') fields[to] = fm[k].trim();
+    }
+  } else {
+    for (const line of raw.split(/\r?\n/)) {
+      const ve = /^Verify-Expect:\s*(.*)$/i.exec(line);
+      if (ve) { fields.verifyExpect = ve[1].trim(); continue; }
+      const m = /^([A-Za-z][A-Za-z ]*?):\s*(.*)$/.exec(line);
+      if (!m) continue;
+      const key = m[1].trim().toLowerCase();
+      const val = m[2].trim();
+      if (key === 'status')            fields.status = normalizeStatus(val);
+      else if (key === 'dependencies') fields.dependencies = parseDependencies(val);
+      else if (key === 'goal')         fields.goal = val;
+      else if (key === 'verify')       fields.verify = val;
+      else if (key === 'source')       fields.source = val;
+    }
   }
 
   const slugMatch = /^T-\d+-(.*)\.md$/.exec(filename);
+  const fileSlug = slugMatch ? slugMatch[1] : '';
+  const title = fields.title || humanizeSlug(fileSlug);
   return {
     id: taskIdFromFilename(filename),
     file: filename,
-    slug: slugMatch ? slugMatch[1] : '',
+    format: v2 ? 2 : 1,
+    title,
+    slug: fileSlug || slugify(title),
     status: fields.status,
     dependencies: fields.dependencies,
     goal: fields.goal,
@@ -288,6 +366,7 @@ function initProject(project, description, { inPlace: forceInPlace = false, name
     current_task: null,
     blocked: false,
     completed_tasks: [],
+    format_version: FORMAT_VERSION,
   };
   if (description) state.description = description;
   writeState(project, state);
@@ -295,35 +374,27 @@ function initProject(project, description, { inPlace: forceInPlace = false, name
   return { projectName, aiDir, tasksDir: tDir, inPlace };
 }
 
-/** Render a task markdown file in the canonical loose `Key: value` format. */
-function renderTask({ goal, source = '', context = '', dependencies = [], subtasks = [],
+/** Render a task file in format v2: JSON-valued frontmatter + `## Section` body. */
+function renderTask({ title = '', goal, source = '', context = '', dependencies = [], subtasks = [],
                       doneCriteria = '', verify = '', verifyExpect = '', nextStep = 'None.' }) {
-  const deps = dependencies.length ? dependencies.join(', ') : 'none';
   const subs = subtasks.length ? subtasks.map((t, i) => `${i + 1}. ${t}`).join('\n') : '';
-  const block = text => (text ? `${text}\n` : '');
-  return `\
-Status: pending
-
-Goal: ${goal}
-${source ? `\nSource: ${source}\n` : ''}
-Context:
-${block(context)}
-Dependencies: ${deps}
-
-Subtasks:
-${block(subs)}
-Done Criteria:
-${block(doneCriteria)}
-Verification:
-
-Verify: ${verify}
-${verifyExpect ? `\nVerify-Expect: ${verifyExpect}\n` : ''}
-Next Step:
-${nextStep}
-
-Blockers:
-None
-`;
+  const front = [
+    `title: ${fmEncode(title || goal)}`,
+    'status: pending',
+    `goal: ${fmEncode(goal)}`,
+    ...(source ? [`source: ${fmEncode(source)}`] : []),
+    `dependencies: ${fmEncode(dependencies)}`,
+    `verify: ${fmEncode(verify)}`,
+    ...(verifyExpect ? [`verify_expect: ${fmEncode(verifyExpect)}`] : []),
+  ];
+  const section = (name, text) => `## ${name}\n${text ? `\n${text}\n` : ''}`;
+  return `---\n${front.join('\n')}\n---\n\n` + [
+    section('Context', context),
+    section('Subtasks', subs),
+    section('Done Criteria', doneCriteria),
+    section('Next Step', nextStep),
+    section('Blockers', 'None'),
+  ].join('\n');
 }
 
 const NEXT_STEP_HINT = 'Run `agent-workflow next --all` for the runnable tasks.';
@@ -346,11 +417,12 @@ function addTask(project, title, {
 
   const n        = nextTaskId(project);
   const taskId   = `T-${String(n).padStart(3, '0')}`;
-  const filename = `${taskId}-${slugify(title)}.md`;
+  const filename = `${taskId}.md`;
   const taskPath = path.join(tasksDir(project), filename);
   const deps     = Array.isArray(after) ? after : (after ? [after] : []);
 
   fs.writeFileSync(taskPath, renderTask({
+    title,
     goal: description || title,
     source, context, subtasks, doneCriteria, verify,
     dependencies: deps,
@@ -387,10 +459,12 @@ function checkExpect(errors, label, v) {
     try { new RegExp(v); } catch (e) { errors.push(`${label} is not a valid regular expression: ${e.message}`); }
   }
 }
-function checkFreeText(errors, label, v) {
+function checkFreeText(errors, label, v, { legacy = false } = {}) {
   if (typeof v !== 'string') errors.push(`${label} must be a string`);
-  else if (RESERVED_LINE_RE.test(v)) {
-    errors.push(`${label} has a line starting with a reserved field (Status/Dependencies/Goal/Verify/Verify-Expect/Source/Evidence)`);
+  else if (RESERVED_HEADING_RE.test(v)) {
+    errors.push(`${label} has a line that is a task section heading (## Context, ## Subtasks, ## Done Criteria, ## Next Step, ## Blockers, ## Evidence)`);
+  } else if (legacy && RESERVED_LINE_RE.test(v)) {
+    errors.push(`${label} has a line starting with a reserved field (Status/Dependencies/Goal/Verify/Source) and this task is still in the legacy format; run \`agent-workflow migrate\``);
   }
 }
 
@@ -527,11 +601,12 @@ function addTasks(project, specs) {
 
   const files = plan.resolved.map((r, i) => {
     const spec = specs[i];
-    const file = `${r.id}-${slugify(spec.title)}.md`;
+    const file = `${r.id}.md`;
     return {
       r, file,
       full: path.join(tasksDir(project), file),
       content: renderTask({
+        title: spec.title,
         goal: spec.goal || spec.title,
         source: spec.source || '',
         context: spec.context || '',
@@ -583,7 +658,7 @@ const HEADERS = ['Status', 'Goal', 'Source', 'Context', 'Dependencies', 'Subtask
 const HEADER_RE = new RegExp(`^(${HEADERS.join('|')}):`, 'i');
 const headerRe = name => new RegExp(`^${name}:`, 'i');
 
-/** Replace (or insert) a single-line `Header: value` field. */
+/** v1: replace (or insert) a single-line `Header: value` field. */
 function setLineField(raw, header, value) {
   const lines = raw.split(/\r?\n/);
   const i = lines.findIndex(l => headerRe(header).test(l));
@@ -595,8 +670,8 @@ function setLineField(raw, header, value) {
   return lines.join('\n');
 }
 
-/** Replace (or append) a block section — everything up to the next known header. */
-function setSection(raw, header, body) {
+/** v1: replace (or append) a block section — everything up to the next known header. */
+function setLegacySection(raw, header, body) {
   const lines = raw.split(/\r?\n/);
   const i = lines.findIndex(l => headerRe(header).test(l));
   const block = [`${header}:`, ...(body ? body.split(/\r?\n/) : []), ''];
@@ -608,6 +683,152 @@ function setSection(raw, header, body) {
   while (end < lines.length && !HEADER_RE.test(lines[end])) end++;
   lines.splice(i, end - i, ...block);
   return lines.join('\n');
+}
+
+const LEGACY_FIELD = { status: 'Status', goal: 'Goal', source: 'Source', verify: 'Verify',
+                       verify_expect: 'Verify-Expect', dependencies: 'Dependencies' };
+
+/**
+ * Set a one-line field (status, goal, source, verify, verify_expect,
+ * dependencies [array], title) in either format. Empty optional fields are
+ * removed from v2 frontmatter instead of being written blank.
+ */
+function setField(raw, key, value) {
+  if (!hasFrontmatter(raw)) {
+    if (key === 'title') return raw; // v1 keeps its title in the filename
+    const v = key === 'dependencies' ? (value.length ? value.join(', ') : 'none') : value;
+    if (key === 'status' && !/^Status:/im.test(raw)) return `Status: ${v}\n\n` + raw;
+    return setLineField(raw, LEGACY_FIELD[key], v);
+  }
+  const { front, body } = splitFrontmatter(raw);
+  const lineKey = FM_KEYS[key];
+  const optional = key === 'source' || key === 'verify_expect';
+  const i = front.findIndex(l => l.startsWith(`${lineKey}:`));
+  const text = `${lineKey}: ${key === 'status' ? value : fmEncode(value)}`;
+  if (i >= 0) { if (optional && !value) front.splice(i, 1); else front[i] = text; }
+  else if (!(optional && !value)) front.push(text);
+  return `---\n${front.join('\n')}\n---\n${body}`;
+}
+
+/** Replace (or append) a named body section in either format. */
+function setSection(raw, header, body) {
+  if (!hasFrontmatter(raw)) return setLegacySection(raw, header, body);
+  const lines = raw.split(/\r?\n/);
+  const want = header.toLowerCase();
+  const isHead = l => { const m = SECTION_RE.exec(l); return m && m[1].toLowerCase() === want; };
+  const i = lines.findIndex(isHead);
+  const block = [`## ${header}`, ...(body ? ['', ...body.split(/\r?\n/)] : []), ''];
+  if (i < 0) {
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    return [...lines, '', ...block].join('\n');
+  }
+  let end = i + 1;
+  while (end < lines.length && !SECTION_RE.test(lines[end])) end++;
+  lines.splice(i, end - i, ...block);
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Migration — format v1 (loose `Key: value` lines) → v2 (frontmatter + sections)
+// ---------------------------------------------------------------------------
+
+const LEGACY_ONE_LINE = ['status', 'goal', 'source', 'dependencies', 'verify', 'verify-expect'];
+
+/** Convert one parsed v1 task to v2 text. Lines that fit no section go to `## Notes`. */
+function legacyToV2(task) {
+  const sections = new Map(); // lower-case name -> lines
+  const notes = [];
+  const seenOneLine = new Map(); // one-line field -> its latest line
+  let current = null; // { key, oneLine }
+  for (const line of task.raw.split(/\r?\n/)) {
+    const m = HEADER_RE.exec(line);
+    if (m) {
+      const key = m[1].toLowerCase();
+      const inline = line.slice(m[0].length).trim();
+      const oneLine = LEGACY_ONE_LINE.includes(key);
+      current = { key, oneLine };
+      if (oneLine) {
+        // The v1 parser keeps the LAST occurrence of a field; earlier ones were prose or stale, so keep them as notes.
+        if (seenOneLine.has(key)) notes.push(seenOneLine.get(key));
+        seenOneLine.set(key, line);
+      } else {
+        sections.set(key, inline ? [inline] : []);
+      }
+      continue;
+    }
+    if (!current) { if (line.trim()) notes.push(line); continue; }
+    if (current.oneLine) { if (line.trim()) notes.push(line); continue; }
+    sections.get(current.key).push(line);
+  }
+
+  const trim = lines => {
+    const l = [...lines];
+    while (l.length && !l[0].trim()) l.shift();
+    while (l.length && !l[l.length - 1].trim()) l.pop();
+    return l.join('\n');
+  };
+  const out = [];
+  for (const name of SECTION_NAMES) {
+    const body = sections.has(name.toLowerCase()) ? trim(sections.get(name.toLowerCase())) : null;
+    if (body === null) continue;
+    if (name === 'Verification' && !body) continue; // empty placeholder heading
+    out.push(`## ${name}\n${body ? `\n${body}\n` : ''}`);
+  }
+  if (notes.length) out.push(`## Notes\n\n${trim(notes)}\n`);
+
+  const front = [
+    `title: ${fmEncode(task.title)}`,
+    `status: ${task.status}`,
+    `goal: ${fmEncode(task.goal || task.title)}`,
+    ...(task.source ? [`source: ${fmEncode(task.source)}`] : []),
+    `dependencies: ${fmEncode(task.dependencies)}`,
+    `verify: ${fmEncode(task.verify)}`,
+    ...(task.verifyExpect ? [`verify_expect: ${fmEncode(task.verifyExpect)}`] : []),
+  ];
+  return `---\n${front.join('\n')}\n---\n\n${out.join('\n')}`;
+}
+
+/**
+ * Convert every v1 task file to format v2 (id-only filenames, frontmatter,
+ * `## Section` bodies) and stamp the state with format_version. Each converted
+ * file is re-parsed and compared with the original before anything is written,
+ * so a conversion that would change a field aborts the whole migration.
+ * `dryRun` reports what would change and writes nothing.
+ */
+function migrateProject(project, { dryRun = false } = {}) {
+  requireProjectDir(project);
+  return withStateLock(project, () => {
+    const migrated = [];
+    const skipped = [];
+    const plan = [];
+    for (const t of listTasks(project)) {
+      if (t.format === 2) { skipped.push(t.id); continue; }
+      const to = `${t.id}.md`;
+      const text = legacyToV2(t);
+      const back = parseTaskText(text, to);
+      for (const f of ['status', 'goal', 'verify', 'verifyExpect', 'source']) {
+        const want = f === 'goal' ? (t.goal || t.title) : t[f];
+        if (back[f] !== want) throw new WorkflowError(`migration would change ${f} of ${t.id}; nothing was written.`);
+      }
+      if (back.dependencies.join() !== t.dependencies.join()) {
+        throw new WorkflowError(`migration would change dependencies of ${t.id}; nothing was written.`);
+      }
+      plan.push({ t, to, text });
+      migrated.push({ id: t.id, from: t.file, to });
+    }
+    if (!dryRun) {
+      for (const { t, to, text } of plan) {
+        writeFileAtomic(path.join(tasksDir(project), to), text);
+        if (t.file !== to) fs.unlinkSync(path.join(tasksDir(project), t.file));
+      }
+      const state = readState(project);
+      state.format_version = FORMAT_VERSION;
+      writeState(project, state);
+      const tpl = path.join(project, '.ai', 'TASK_TEMPLATE.md');
+      if (fs.existsSync(tpl)) fs.writeFileSync(tpl, templates.TASK_TEMPLATE, 'utf8');
+    }
+    return { migrated, skipped, dryRun };
+  });
 }
 
 /** Throws unless the task can still be re-planned: pending and unclaimed. */
@@ -660,12 +881,13 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
     if (!patch.title.trim() || !slugify(patch.title)) errors.push('title needs at least one letter or digit');
     if (patch.title.length > 80) errors.push('title is longer than 80 characters');
   }
+  const legacy = { legacy: task.format === 1 };
   for (const f of ['context', 'done_criteria']) {
-    if (patch[f] !== undefined) checkFreeText(errors, f, patch[f]);
+    if (patch[f] !== undefined) checkFreeText(errors, f, patch[f], legacy);
   }
   if (patch.subtasks !== undefined) {
     if (!Array.isArray(patch.subtasks)) errors.push('subtasks must be an array');
-    else patch.subtasks.forEach((t, i) => checkFreeText(errors, `subtasks[${i}]`, t));
+    else patch.subtasks.forEach((t, i) => checkFreeText(errors, `subtasks[${i}]`, t, legacy));
   }
 
   let deps = null;
@@ -693,11 +915,12 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
   if (errors.length) throw new WorkflowError(`invalid update:\n${errors.map(e => `  - ${e}`).join('\n')}`);
 
   let raw = task.raw;
-  if (patch.goal !== undefined)          raw = setLineField(raw, 'Goal', patch.goal);
-  if (patch.source !== undefined)        raw = setLineField(raw, 'Source', patch.source);
-  if (patch.verify !== undefined)        raw = setLineField(raw, 'Verify', patch.verify);
-  if (patch.verify_expect !== undefined) raw = setLineField(raw, 'Verify-Expect', patch.verify_expect);
-  if (deps)                              raw = setLineField(raw, 'Dependencies', deps.length ? deps.join(', ') : 'none');
+  if (patch.title !== undefined)         raw = setField(raw, 'title', patch.title);
+  if (patch.goal !== undefined)          raw = setField(raw, 'goal', patch.goal);
+  if (patch.source !== undefined)        raw = setField(raw, 'source', patch.source);
+  if (patch.verify !== undefined)        raw = setField(raw, 'verify', patch.verify);
+  if (patch.verify_expect !== undefined) raw = setField(raw, 'verify_expect', patch.verify_expect);
+  if (deps)                              raw = setField(raw, 'dependencies', deps);
   if (patch.context !== undefined)       raw = setSection(raw, 'Context', patch.context);
   if (patch.done_criteria !== undefined) raw = setSection(raw, 'Done Criteria', patch.done_criteria);
   if (patch.subtasks !== undefined) {
@@ -705,7 +928,8 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
   }
 
   let file = task.file;
-  if (patch.title !== undefined) file = `${task.id}-${slugify(patch.title)}.md`;
+  // v2 files are named by id alone, so a new title never renames them; v1 keeps its slug in the name.
+  if (patch.title !== undefined && task.format === 1) file = `${task.id}-${slugify(patch.title)}.md`;
   const target = path.join(tasksDir(project), file);
   if (file !== task.file && fs.existsSync(target)) throw new WorkflowError(`${file} already exists.`);
 
@@ -871,16 +1095,10 @@ function assertTransition(from, to) {
   }
 }
 
-/** Rewrite the `Status:` line of a task file in place. */
+/** Rewrite the status of a task file in place. */
 function setTaskStatus(projectDir, task, status) {
   const full = path.join(tasksDir(projectDir), task.file);
-  let raw = task.raw;
-  if (/^Status:.*$/m.test(raw)) {
-    raw = raw.replace(/^Status:.*$/m, `Status: ${status}`);
-  } else {
-    raw = `Status: ${status}\n\n` + raw;
-  }
-  fs.writeFileSync(full, raw, 'utf8');
+  fs.writeFileSync(full, setField(task.raw, 'status', status), 'utf8');
 }
 
 /** True when any task file is currently blocked. */
@@ -1389,6 +1607,8 @@ function validateProject(project) {
     errors.push('project_verify must be a string');
   if ('max_task_id' in state && !Number.isInteger(state.max_task_id))
     errors.push('max_task_id must be an integer');
+  if ('format_version' in state && !Number.isInteger(state.format_version))
+    errors.push('format_version must be an integer');
 
   const tasks = listTasks(project);
   const ids = new Set(tasks.map(t => t.id));
@@ -1451,7 +1671,12 @@ function validateProject(project) {
     errors.push('a task is blocked but state.blocked is false');
   }
 
-  return { ok: errors.length === 0, errors };
+  const warnings = [];
+  const legacy = tasks.filter(t => t.format === 1).map(t => t.id);
+  if (legacy.length) {
+    warnings.push(`${legacy.length} task file(s) use the legacy format (${legacy.join(', ')}); run \`agent-workflow migrate\``);
+  }
+  return { ok: errors.length === 0, errors, warnings };
 }
 
 /** Set the project phase (the one field agents change directly, via command). */
@@ -1515,6 +1740,10 @@ module.exports = {
   selectNextTask,
   runnableTasks,
   startTask,
+  migrateProject,
+  parseTaskText,
+  setField,
+  FORMAT_VERSION,
   verifyTask,
   verifyProject,
   setProjectVerify: locked(setProjectVerify),

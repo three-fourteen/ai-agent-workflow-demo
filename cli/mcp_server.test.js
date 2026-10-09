@@ -84,7 +84,7 @@ test('an illegal transition surfaces as an MCP tool error', async () => {
 test('validate reports ok for a fresh project', async () => {
   await withServer(async ({ client }) => {
     const res = await client.callTool({ name: 'validate', arguments: {} });
-    assert.deepEqual(payload(res), { ok: true, errors: [] });
+    assert.deepEqual(payload(res), { ok: true, errors: [], warnings: [] });
   });
 });
 
@@ -322,7 +322,28 @@ test('set_project_verify blocks complete_task; evidence and red-first warning vi
     assert.equal(done.verified, true);
     const file = core.findTask(proj, 'T-001').file;
     const raw = readFileSync(join(proj, 'tasks', file), 'utf8');
-    assert.match(raw, /^Evidence:$/m);
+    assert.match(raw, /^## Evidence$/m);
     assert.match(raw, /task verify: `echo "# pass 3"` exit 0, matched/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-006: migrate_project
+// ---------------------------------------------------------------------------
+
+test('migrate_project previews with dry_run and converts legacy task files', async () => {
+  await withServer(async ({ client, proj }) => {
+    require('node:fs').writeFileSync(require('node:path').join(proj, 'tasks', 'T-099-legacy.md'),
+      'Status: pending\nGoal: old\nDependencies: none\nVerify: true\n');
+    const dry = payload(await client.callTool({ name: 'migrate_project', arguments: { dry_run: true } }));
+    assert.equal(dry.dryRun, true);
+    assert.deepEqual(dry.migrated, [{ id: 'T-099', from: 'T-099-legacy.md', to: 'T-099.md' }]);
+    const v = payload(await client.callTool({ name: 'validate', arguments: {} }));
+    assert.match(v.warnings[0], /legacy format \(T-099\)/);
+
+    const done = payload(await client.callTool({ name: 'migrate_project', arguments: {} }));
+    assert.equal(done.migrated.length, 1);
+    assert.equal(core.findTask(proj, 'T-099').format, 2);
+    assert.deepEqual(payload(await client.callTool({ name: 'validate', arguments: {} })).warnings, []);
   });
 });

@@ -235,6 +235,34 @@ agent-workflow task add my-app "Build dashboard" --after T-001
 agent-workflow task add "Setup project"
 ```
 
+### Task file format
+
+Each task is `tasks/T-007.md`, named by id alone, so renaming a task never moves the file.
+Single-line fields live in YAML frontmatter (values are JSON strings, so any character is
+safe); the body is free-form Markdown divided by `## ` section headings.
+
+```markdown
+---
+title: "Record decisions on tasks"
+status: pending
+goal: "Choices made during a task live in workflow state"
+dependencies: ["T-006"]
+verify: "node --test cli/core.test.js"
+---
+
+## Context
+Any text, including lines like `Status: done` or `Verify: x`.
+
+## Done Criteria
+Decisions survive complete and show up in status.
+
+## Blockers
+None
+```
+
+Projects created before this format (`Status:` / `Goal:` lines) keep working and can be
+converted with [`migrate`](#migrate). `PROJECT_STATE.json` records `format_version: 2`.
+
 ### status
 
 Prints an overview of projects. When run from inside a project directory it shows that project; otherwise it scans subdirectories.
@@ -242,14 +270,14 @@ Prints an overview of projects. When run from inside a project directory it show
 ```
 Project        Phase      Current Task                 Done   Blocked
 ---------------------------------------------------------------------
-my-app         prototype  T-001-setup-project          0/2    no
-social-feed    prototype  T-001-setup-project          0/4    no
+my-app         prototype  T-001                        0/2    no
+social-feed    prototype  T-001                        0/4    no
 ```
 
 ### task start / complete / block / unblock
 
 The CLI owns state transitions. Agents never hand-edit `PROJECT_STATE.json` or a
-task's `Status:` line — they call these commands, and the CLI enforces the state
+task's `status` field — they call these commands, and the CLI enforces the state
 machine.
 
 ```
@@ -452,8 +480,10 @@ itself: the agent reads it (a file, Asana, anything) and passes the text in.
    every `verify` command so it can be reviewed.
 
 Tasks in a plan reference each other by a local `key`; ids (`T-001`…) are assigned
-on write. Free text may not contain lines starting with `Status:`, `Dependencies:`,
-`Goal:`, `Verify:` or `Source:`, since the task parser would read them as fields.
+on write. Free text can contain any line, including ones that look like fields
+(`Status: …`, `Verify: …`); the only lines it cannot contain are the task's own section
+headings (`## Context`, `## Subtasks`, `## Done Criteria`, `## Next Step`, `## Blockers`,
+`## Evidence`).
 
 #### Re-planning
 
@@ -461,7 +491,8 @@ Plans change. Tasks that haven't started can be edited without touching files by
 
 - `update_task` — patches only the fields you pass (`title`, `goal`, `context`,
   `depends_on` as task ids, `subtasks`, `done_criteria`, `verify`, `source`).
-  Everything else in the file is preserved. Changing `title` renames the file.
+  Everything else in the file is preserved. Changing `title` edits the frontmatter; the
+  file is named by id and never renamed.
   Unknown dependencies and cycles are rejected.
 - `remove_task` — deletes a task nothing else depends on, and repoints
   `current_task` if needed.
@@ -474,6 +505,18 @@ can't silently point at a different task.
 ```
 agent-workflow mcp                # serve the current project
 ```
+
+### migrate
+
+```bash
+agent-workflow migrate [<project>] [--dry-run]
+```
+
+Converts legacy (format v1) task files to the current format, in place. Every converted
+file is re-parsed and compared field by field with the original before anything is
+written; if a field would change, nothing is written. Lines that fit no section are kept
+under `## Notes`. `--dry-run` lists what would change. It is idempotent, and `validate`
+warns while legacy files remain. Mixed projects work: each file is read in its own format.
 
 ### plan
 

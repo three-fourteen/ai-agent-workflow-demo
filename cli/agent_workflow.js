@@ -134,8 +134,21 @@ function cmdTaskReopen(project, taskId) {
   console.log(`${r.taskId} → pending`);
 }
 
+function cmdMigrate(project, dryRun) {
+  const r = core.migrateProject(project, { dryRun });
+  if (!r.migrated.length) {
+    console.log(`Nothing to migrate: ${r.skipped.length} task file(s) already use format ${core.FORMAT_VERSION}.`);
+    return;
+  }
+  for (const m of r.migrated) console.log(`${dryRun ? 'would migrate' : 'migrated'} ${m.from} → ${m.to}`);
+  console.log(dryRun
+    ? `\nDry run: ${r.migrated.length} file(s) would change. Re-run without --dry-run to apply.`
+    : `\nMigrated ${r.migrated.length} task file(s) to format ${core.FORMAT_VERSION}.`);
+}
+
 function cmdValidate(project) {
-  const { ok, errors } = core.validateProject(project);
+  const { ok, errors, warnings = [] } = core.validateProject(project);
+  for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
   if (ok) {
     console.log('✓ valid');
     return;
@@ -302,6 +315,8 @@ function parseFlags(argv) {
       flags.noVerify = true;
     } else if (arg === '--json') {
       flags.json = true;
+    } else if (arg === '--dry-run') {
+      flags.dryRun = true;
     } else if (arg === '--agent') {
       flags.agent = argv[++i];
     } else if (arg === '--set') {
@@ -333,6 +348,7 @@ Usage:
   agent-workflow worktree [<project>] <id>
   agent-workflow status [<project>]
   agent-workflow verify-config [<project>] [--set "<command>" | --clear]
+  agent-workflow migrate [<project>] [--dry-run]
   agent-workflow validate [<project>]
   agent-workflow finalize [<project>]
   agent-workflow mcp [<project>]
@@ -435,6 +451,10 @@ function main() {
   } else if (command === 'verify-config') {
     const { flags, positional } = parseFlags(rest);
     cmdVerifyConfig(positional[0] || '.', { set: flags.set, clear: flags.clear || false });
+
+  } else if (command === 'migrate') {
+    const { positional, flags } = parseFlags(rest);
+    cmdMigrate(positional[0] || '.', !!flags.dryRun);
 
   } else if (command === 'validate') {
     const { positional } = parseFlags(rest);
