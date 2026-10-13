@@ -120,10 +120,10 @@ test('task add creates T-001 and sets current_task', () => withTmp(dir => {
   run(['init', 'proj'], dir);
   const r = run(['task', 'add', 'proj', 'Setup project'], dir);
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /T-001-setup-project\.md/);
+  assert.match(r.stdout, /T-001\.md/);
   assert.match(r.stdout, /set as current_task/);
 
-  assert.ok(existsSync(join(dir, 'proj', 'tasks', 'T-001-setup-project.md')));
+  assert.ok(existsSync(join(dir, 'proj', 'tasks', 'T-001.md')));
 
   const state = JSON.parse(
     readFileSync(join(dir, 'proj', '.ai', 'PROJECT_STATE.json'), 'utf8')
@@ -139,9 +139,9 @@ test('task add second task does not overwrite current_task', () => withTmp(dir =
   assert.doesNotMatch(r.stdout, /set as current_task/);
 
   const content = readFileSync(
-    join(dir, 'proj', 'tasks', 'T-002-second-task.md'), 'utf8'
+    join(dir, 'proj', 'tasks', 'T-002.md'), 'utf8'
   );
-  assert.match(content, /Dependencies: T-001/);
+  assert.match(content, /^dependencies: \["T-001"\]$/m);
 
   const state = JSON.parse(
     readFileSync(join(dir, 'proj', '.ai', 'PROJECT_STATE.json'), 'utf8')
@@ -152,16 +152,16 @@ test('task add second task does not overwrite current_task', () => withTmp(dir =
 test('task add slugifies title (punctuation, mixed case)', () => withTmp(dir => {
   run(['init', 'proj'], dir);
   run(['task', 'add', 'proj', 'Build Dashboard UI!'], dir);
-  assert.ok(existsSync(join(dir, 'proj', 'tasks', 'T-001-build-dashboard-ui.md')));
+  assert.ok(existsSync(join(dir, 'proj', 'tasks', 'T-001.md')));
 }));
 
 test('task add with --description uses it as goal', () => withTmp(dir => {
   run(['init', 'proj'], dir);
   run(['task', 'add', 'proj', 'Setup', '-d', 'Custom goal text'], dir);
   const content = readFileSync(
-    join(dir, 'proj', 'tasks', 'T-001-setup.md'), 'utf8'
+    join(dir, 'proj', 'tasks', 'T-001.md'), 'utf8'
   );
-  assert.match(content, /Goal: Custom goal text/);
+  assert.match(content, /^goal: "Custom goal text"$/m);
 }));
 
 test('task add fails for unknown project', () => withTmp(dir => {
@@ -174,7 +174,7 @@ test('task add without project arg works inside project dir', () => withTmp(dir 
   run(['init'], dir);
   const r = run(['task', 'add', 'Setup project'], dir);
   assert.equal(r.status, 0);
-  assert.ok(existsSync(join(dir, 'tasks', 'T-001-setup-project.md')));
+  assert.ok(existsSync(join(dir, 'tasks', 'T-001.md')));
 }));
 
 test('task add without project arg fails outside project dir', () => withTmp(dir => {
@@ -228,8 +228,8 @@ test('task complete is gated on a failing Verify command', () => withTmp(dir => 
   run(['init', 'proj'], dir);
   run(['task', 'add', 'proj', 'Setup'], dir);
   // set a failing Verify command
-  const f = join(dir, 'proj', 'tasks', 'T-001-setup.md');
-  writeFileSync(f, readFileSync(f, 'utf8').replace(/^Verify:.*$/m, 'Verify: exit 1'));
+  const f = join(dir, 'proj', 'tasks', 'T-001.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "exit 1"'));
   run(['task', 'start', 'proj', 'T-001'], dir);
   const r = run(['task', 'complete', 'proj', 'T-001'], dir);
   assert.equal(r.status, 1);
@@ -431,4 +431,188 @@ test('plan without args fails outside project dir', () => withTmp(dir => {
   const r = run(['plan'], dir);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /not inside a project/);
+}));
+
+// ---------------------------------------------------------------------------
+// T-003: task reset
+// ---------------------------------------------------------------------------
+
+test('task reset returns an in-progress task to pending', () => withTmp(dir => {
+  run(['init'], dir);
+  run(['task', 'add', 'Alpha'], dir);
+  run(['task', 'start', 'T-001', '--agent', 'alice'], dir);
+  const bad = run(['task', 'reset', 'T-001', '--agent', 'bob'], dir);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /claimed by 'alice'/);
+  const r = run(['task', 'reset', 'T-001'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /T-001 → pending/);
+  assert.match(run(['task', 'start', 'T-001'], dir).stdout, /in-progress/);
+  assert.match(run(['--help'], dir).stdout, /task reset/);
+}));
+
+// ---------------------------------------------------------------------------
+// T-004: deferred status
+// ---------------------------------------------------------------------------
+
+test('task defer / reopen, status, next and finalize with deferred tasks', () => withTmp(dir => {
+  run(['init'], dir);
+  run(['task', 'add', 'One'], dir);
+  run(['task', 'add', 'Two', '--after', 'T-001'], dir);
+  run(['task', 'block', 'T-002', '--reason', 'x'], dir);
+  assert.equal(run(['finalize'], dir).status, 1, 'blocked task stops finalize');
+
+  let r = run(['task', 'defer', 'T-002', '--reason', 'backlog'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /T-002 → deferred/);
+  assert.match(run(['status'], dir).stdout, /deferred: T-002/);
+
+  run(['task', 'start', 'T-001'], dir);
+  run(['task', 'complete', 'T-001', '--no-verify'], dir);
+  r = run(['next'], dir);
+  assert.match(r.stdout, /No runnable task/);
+  r = run(['finalize'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /Deferred \(kept on record\): T-002/);
+
+  r = run(['task', 'reopen', 'T-002'], dir);
+  assert.match(r.stdout, /T-002 → pending/);
+  assert.equal(run(['task', 'reopen', 'T-002'], dir).status, 1);
+  assert.match(run(['--help'], dir).stdout, /task defer/);
+}));
+
+// ---------------------------------------------------------------------------
+// T-005: project-wide verify, evidence, red-first (CLI)
+// ---------------------------------------------------------------------------
+
+test('verify-config sets, shows and clears the project verify; it gates complete', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "echo task-ok"'));
+
+  assert.match(run(['verify-config', 'proj'], dir).stdout, /\(none\)/);
+  const set = run(['verify-config', 'proj', '--set', 'echo proj-broken; exit 2'], dir);
+  assert.equal(set.status, 0);
+  assert.match(set.stdout, /project verify: echo proj-broken/);
+
+  assert.equal(run(['task', 'start', 'proj', 'T-001'], dir).status, 0);
+  const r = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /project verification failed/);
+
+  assert.equal(run(['verify-config', 'proj', '--set', 'echo proj-ok'], dir).status, 0);
+  const ok = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.equal(ok.status, 0);
+  assert.match(readFileSync(f, 'utf8'), /^## Evidence$/m);
+  assert.match(readFileSync(f, 'utf8'), /project verify: `echo proj-ok` exit 0/);
+
+  assert.equal(run(['verify-config', 'proj', '--clear'], dir).status, 0);
+  assert.match(run(['verify-config', 'proj'], dir).stdout, /\(none\)/);
+}));
+
+test('task start prints a red-first warning when Verify already passes', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "exit 0"'));
+  const r = run(['task', 'start', 'proj', 'T-001'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /in-progress/);
+  assert.match(r.stderr, /Warning: .*already passes/);
+}));
+
+test('task verify enforces Verify-Expect', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "echo \\"# pass 0\\""\nverify_expect: "# pass [1-9]"'));
+  run(['task', 'start', 'proj', 'T-001'], dir);
+  const v = run(['task', 'verify', 'proj', 'T-001'], dir);
+  assert.notEqual(v.status, 0);
+  assert.match(v.stdout, /# pass 0/); // output is still shown
+}));
+
+// ---------------------------------------------------------------------------
+// T-006: migrate
+// ---------------------------------------------------------------------------
+
+test('migrate converts legacy task files, supports --dry-run, and validate stops warning', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  writeFileSync(join(dir, 'proj', 'tasks', 'T-001-old-style.md'),
+    'Status: pending\n\nGoal: do it\n\nDependencies: none\n\nVerify: true\n\nBlockers:\nNone\n');
+
+  const warn = run(['validate', 'proj'], dir);
+  assert.equal(warn.status, 0);
+  assert.match(warn.stderr, /warning: 1 task file\(s\) use the legacy format \(T-001\)/);
+
+  const dry = run(['migrate', 'proj', '--dry-run'], dir);
+  assert.equal(dry.status, 0);
+  assert.match(dry.stdout, /would migrate T-001-old-style\.md → T-001\.md/);
+  assert.ok(existsSync(join(dir, 'proj', 'tasks', 'T-001-old-style.md')));
+
+  const r = run(['migrate', 'proj'], dir);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /Migrated 1 task file\(s\) to format 2/);
+  assert.ok(existsSync(join(dir, 'proj', 'tasks', 'T-001.md')));
+  assert.ok(!existsSync(join(dir, 'proj', 'tasks', 'T-001-old-style.md')));
+
+  const after = run(['validate', 'proj'], dir);
+  assert.equal(after.stderr, '');
+  assert.match(after.stdout, /valid/);
+  assert.match(run(['migrate', 'proj'], dir).stdout, /Nothing to migrate/);
+  assert.match(run(['--help'], dir).stdout, /migrate \[<project>\] \[--dry-run\]/);
+}));
+
+// ---------------------------------------------------------------------------
+// T-007: decisions
+// ---------------------------------------------------------------------------
+
+test('decisions: task decide, task complete --decision, decisions, status and start prompts', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'Setup'], dir);
+  const f = join(dir, 'proj', 'tasks', 'T-001.md');
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "true"'));
+  run(['task', 'start', 'proj', 'T-001'], dir);
+
+  assert.equal(run(['task', 'decide', 'proj', 'T-001'], dir).status, 1);        // needs --decision
+  const d = run(['task', 'decide', 'proj', 'T-001', '--decision', 'use tabs', '--decision', 'no semicolons'], dir);
+  assert.equal(d.status, 0);
+  assert.match(d.stdout, /T-001: 2 decision\(s\) recorded/);
+
+  const c = run(['task', 'complete', 'proj', 'T-001', '--decision', 'shipped as a single file'], dir);
+  assert.equal(c.status, 0);
+
+  const list = run(['decisions', 'proj'], dir);
+  assert.match(list.stdout, /T-001  Setup\n  - use tabs\n  - no semicolons\n  - shipped as a single file\n/);
+  const json = JSON.parse(run(['decisions', 'proj', '--json'], dir).stdout);
+  assert.deepEqual(json.map(x => x.text), ['use tabs', 'no semicolons', 'shipped as a single file']);
+
+  assert.match(run(['status', 'proj'], dir).stdout, /decisions: 3/);
+  assert.match(run(['start', 'proj'], dir).stdout, /Decisions so far:\n  - T-001: use tabs/);
+  assert.match(run(['--help'], dir).stdout, /task decide/);
+  assert.match(run(['decisions', 'empty-proj-does-not-exist'], dir).stderr, /not found|Error/);
+}));
+
+// ---------------------------------------------------------------------------
+// T-008: the "nothing runnable" hint reflects reality
+// ---------------------------------------------------------------------------
+
+test('task complete explains why nothing is runnable instead of suggesting finalize too early', () => withTmp(dir => {
+  run(['init', 'proj'], dir);
+  run(['task', 'add', 'proj', 'First'], dir);
+  run(['task', 'add', 'proj', 'Second'], dir);
+  for (const id of ['T-001', 'T-002']) {
+    const f = join(dir, 'proj', 'tasks', `${id}.md`);
+    writeFileSync(f, readFileSync(f, 'utf8').replace(/^verify:.*$/m, 'verify: "true"'));
+  }
+  run(['task', 'start', 'proj', 'T-001'], dir);
+  run(['task', 'start', 'proj', 'T-002'], dir);
+
+  const first = run(['task', 'complete', 'proj', 'T-001'], dir);
+  assert.match(first.stdout, /No other task is runnable yet; 1 in progress \(T-002\)/);
+  assert.doesNotMatch(first.stdout, /finalize/);
+
+  const last = run(['task', 'complete', 'proj', 'T-002'], dir);
+  assert.match(last.stdout, /All tasks are done — run `.*validate`, then `.*finalize`/);
 }));

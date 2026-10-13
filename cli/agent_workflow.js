@@ -77,14 +77,53 @@ function agentName(flags) {
 function cmdTaskStart(project, taskId, agent) {
   const r = core.startTask(project, taskId, { agent });
   console.log(`${r.taskId} → in-progress`);
+  if (r.warning) process.stderr.write(`Warning: ${r.warning}\n`);
 }
 
-function cmdTaskComplete(project, taskId, { force, noVerify }) {
-  const r = core.completeTask(project, taskId, { force, noVerify, inherit: true });
+function cmdVerifyConfig(project, { set, clear }) {
+  if (clear) core.setProjectVerify(project, '');
+  else if (set !== undefined) core.setProjectVerify(project, set);
+  const cmd = core.readState(project).project_verify || '';
+  console.log(cmd ? `project verify: ${cmd}` : 'project verify: (none)');
+}
+
+/** Why `next` is empty: work still in flight, blocked, waiting on dependencies, or truly done. */
+function nothingRunnableHint(project) {
+  const tasks = core.listTasks(project);
+  const ids = status => tasks.filter(t => t.status === status).map(t => t.id);
+  const inProgress = ids('in-progress');
+  const blocked = ids('blocked');
+  const pending = ids('pending');
+  if (inProgress.length) return `No other task is runnable yet; ${inProgress.length} in progress (${inProgress.join(', ')}).`;
+  if (blocked.length) return `Nothing is runnable; blocked: ${blocked.join(', ')}. Unblock or defer ${blocked.length > 1 ? 'them' : 'it'}.`;
+  if (pending.length) {
+    return `Nothing is runnable; ${pending.length} pending task(s) wait on dependencies (${pending.join(', ')}). ` +
+           `Run \`${invokePrefix()} validate\`.`;
+  }
+  return `All tasks are done — run \`${invokePrefix()} validate\`, then \`${invokePrefix()} finalize\`.`;
+}
+
+function cmdTaskDecide(project, taskId, decisions) {
+  if (!decisions.length) fail('task decide requires --decision "text" (repeatable).\n' + USAGE);
+  const r = core.recordDecisions(project, taskId, decisions);
+  console.log(`${r.taskId}: ${r.decisions.length} decision(s) recorded`);
+}
+
+function cmdDecisions(project, json) {
+  const all = core.listDecisions(project);
+  if (json) { console.log(JSON.stringify(all, null, 2)); return; }
+  if (!all.length) { console.log('No decisions recorded.'); return; }
+  let last = '';
+  for (const d of all) {
+    if (d.task !== last) { console.log(`${d.task}  ${d.title}`); last = d.task; }
+    console.log(`  - ${d.text}`);
+  }
+}
+
+function cmdTaskComplete(project, taskId, { force, noVerify, decisions = [] }) {
+  const r = core.completeTask(project, taskId, { force, noVerify, decisions, inherit: true });
   console.log(`${r.taskId} → completed${r.verified ? ' (verified)' : ' (unverified)'}`);
-  console.log(r.nextTask
-    ? `Next task: ${r.nextTask}`
-    : `No runnable task remains — run \`${invokePrefix()} validate\`, then \`${invokePrefix()} finalize\`.`);
+  console.log(r.nextTask ? `Next task: ${r.nextTask}` : nothingRunnableHint(project));
 }
 
 function cmdVerify(project, taskId) {
@@ -111,8 +150,36 @@ function cmdTaskUnblock(project, taskId) {
   console.log(`${r.taskId} → pending`);
 }
 
+function cmdTaskReset(project, taskId, agent) {
+  const r = core.resetTask(project, taskId, { agent });
+  console.log(`${r.taskId} → pending`);
+}
+
+function cmdTaskDefer(project, taskId, reason) {
+  const r = core.deferTask(project, taskId, { reason });
+  console.log(`${r.taskId} → deferred`);
+}
+
+function cmdTaskReopen(project, taskId) {
+  const r = core.reopenTask(project, taskId);
+  console.log(`${r.taskId} → pending`);
+}
+
+function cmdMigrate(project, dryRun) {
+  const r = core.migrateProject(project, { dryRun });
+  if (!r.migrated.length) {
+    console.log(`Nothing to migrate: ${r.skipped.length} task file(s) already use format ${core.FORMAT_VERSION}.`);
+    return;
+  }
+  for (const m of r.migrated) console.log(`${dryRun ? 'would migrate' : 'migrated'} ${m.from} → ${m.to}`);
+  console.log(dryRun
+    ? `\nDry run: ${r.migrated.length} file(s) would change. Re-run without --dry-run to apply.`
+    : `\nMigrated ${r.migrated.length} task file(s) to format ${core.FORMAT_VERSION}.`);
+}
+
 function cmdValidate(project) {
-  const { ok, errors } = core.validateProject(project);
+  const { ok, errors, warnings = [] } = core.validateProject(project);
+  for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
   if (ok) {
     console.log('✓ valid');
     return;
@@ -125,6 +192,7 @@ function cmdValidate(project) {
 function cmdFinalize(project) {
   const r = core.finalize(project, 'completed');
   console.log(`phase → ${r.phase}`);
+  if (r.deferred.length) console.log(`Deferred (kept on record): ${r.deferred.join(', ')}`);
 }
 
 function cmdNext(project, all, json) {
@@ -135,7 +203,10 @@ function cmdNext(project, all, json) {
     return;
   }
   if (chosen.length === 0) {
-    console.log('No runnable task — all tasks are completed, blocked, or waiting on dependencies.');
+    console.log('No runnable task — all tasks are completed, blocked, deferred, or waiting on dependencies.');
+    for (const w of core.tasksWaitingOnDeferred(project)) {
+      console.log(`${w.id} is waiting on deferred ${w.deferred.join(', ')} (reopen it or change the dependency).`);
+    }
     return;
   }
   for (const t of chosen) {
@@ -205,6 +276,8 @@ function cmdStatus(filterProject) {
       `${s.completed}/${s.total}`.padEnd(colW[3]) + ' ' +
       (s.blocked ? 'yes' : 'no')
     );
+    if (s.deferred.length) console.log(`  deferred: ${s.deferred.join(', ')}`);
+    if (s.decisions) console.log(`  decisions: ${s.decisions} (run \`${invokePrefix()} decisions\`)`);
   }
 }
 
@@ -230,6 +303,7 @@ function cmdPlan(project, execute) {
   }
   console.log(`Current state: phase=${s.phase}, current_task=${s.current}, blocked=${s.blocked}.`);
   console.log(`Completed: ${s.completed}/${s.total} tasks.`);
+  printDecisionsSoFar(s.decisions);
 }
 
 function cmdStart(project, all) {
@@ -245,6 +319,15 @@ function cmdStart(project, all) {
   }
   console.log(`Current state: phase=${s.phase}, current_task=${s.current}, blocked=${s.blocked}.`);
   console.log(`Completed: ${s.completed}/${s.total} tasks.`);
+  printDecisionsSoFar(s.decisions);
+}
+
+/** Show the latest decisions so the next agent starts from what was already settled. */
+function printDecisionsSoFar(decisions, limit = 10) {
+  if (!decisions.length) return;
+  const shown = decisions.slice(-limit);
+  console.log(`Decisions so far${decisions.length > shown.length ? ` (latest ${shown.length} of ${decisions.length}; see \`${invokePrefix()} decisions\`)` : ''}:`);
+  for (const d of shown) console.log(`  - ${d.task}: ${d.text}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +357,16 @@ function parseFlags(argv) {
       flags.noVerify = true;
     } else if (arg === '--json') {
       flags.json = true;
+    } else if (arg === '--dry-run') {
+      flags.dryRun = true;
+    } else if (arg === '--decision') {
+      (flags.decisions = flags.decisions || []).push(argv[++i]);
     } else if (arg === '--agent') {
       flags.agent = argv[++i];
+    } else if (arg === '--set') {
+      flags.set = argv[++i];
+    } else if (arg === '--clear') {
+      flags.clear = true;
     } else {
       positional.push(arg);
     }
@@ -288,15 +379,22 @@ Usage:
   agent-workflow init [<project>] [--description|-d "..."]
   agent-workflow task add [<project>] <title> [--description|-d "..."] [--after T-001]
   agent-workflow task start [<project>] <id> [--agent NAME]
-  agent-workflow task complete [<project>] <id> [--force|-f] [--no-verify]
+  agent-workflow task complete [<project>] <id> [--force|-f] [--no-verify] [--decision "..."]...
+  agent-workflow task decide [<project>] <id> --decision "..." [--decision "..."]...
   agent-workflow task verify [<project>] <id>
   agent-workflow task block [<project>] <id> --reason "..." [--strategy "..."]
   agent-workflow task unblock [<project>] <id>
+  agent-workflow task reset [<project>] <id> [--agent NAME]
+  agent-workflow task defer [<project>] <id> [--reason "..."]
+  agent-workflow task reopen [<project>] <id>
   agent-workflow next [<project>] [--all] [--json]
   agent-workflow claim [<project>] <id> [--agent NAME]
   agent-workflow release [<project>] <id>
   agent-workflow worktree [<project>] <id>
   agent-workflow status [<project>]
+  agent-workflow verify-config [<project>] [--set "<command>" | --clear]
+  agent-workflow decisions [<project>] [--json]
+  agent-workflow migrate [<project>] [--dry-run]
   agent-workflow validate [<project>]
   agent-workflow finalize [<project>]
   agent-workflow mcp [<project>]
@@ -347,7 +445,11 @@ function main() {
 
     } else if (sub === 'complete') {
       const { project, taskId } = resolveTaskArgs(positional, 'complete');
-      cmdTaskComplete(project, taskId, { force: flags.force || false, noVerify: flags.noVerify || false });
+      cmdTaskComplete(project, taskId, { force: flags.force || false, noVerify: flags.noVerify || false, decisions: flags.decisions || [] });
+
+    } else if (sub === 'decide') {
+      const { project, taskId } = resolveTaskArgs(positional, 'decide');
+      cmdTaskDecide(project, taskId, flags.decisions || []);
 
     } else if (sub === 'verify') {
       const { project, taskId } = resolveTaskArgs(positional, 'verify');
@@ -360,6 +462,18 @@ function main() {
     } else if (sub === 'unblock') {
       const { project, taskId } = resolveTaskArgs(positional, 'unblock');
       cmdTaskUnblock(project, taskId);
+
+    } else if (sub === 'reset') {
+      const { project, taskId } = resolveTaskArgs(positional, 'reset');
+      cmdTaskReset(project, taskId, flags.agent || '');
+
+    } else if (sub === 'defer') {
+      const { project, taskId } = resolveTaskArgs(positional, 'defer');
+      cmdTaskDefer(project, taskId, flags.reason || '');
+
+    } else if (sub === 'reopen') {
+      const { project, taskId } = resolveTaskArgs(positional, 'reopen');
+      cmdTaskReopen(project, taskId);
 
     } else {
       fail(`unknown task subcommand '${sub}'.\n` + USAGE);
@@ -383,6 +497,18 @@ function main() {
     const { positional } = parseFlags(rest);
     const { project, taskId } = resolveTaskArgs(positional, 'worktree');
     cmdWorktree(project, taskId);
+
+  } else if (command === 'verify-config') {
+    const { flags, positional } = parseFlags(rest);
+    cmdVerifyConfig(positional[0] || '.', { set: flags.set, clear: flags.clear || false });
+
+  } else if (command === 'decisions') {
+    const { positional, flags } = parseFlags(rest);
+    cmdDecisions(positional[0] || '.', !!flags.json);
+
+  } else if (command === 'migrate') {
+    const { positional, flags } = parseFlags(rest);
+    cmdMigrate(positional[0] || '.', !!flags.dryRun);
 
   } else if (command === 'validate') {
     const { positional } = parseFlags(rest);

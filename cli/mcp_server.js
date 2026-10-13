@@ -38,6 +38,7 @@ const TASK_SPEC = {
     subtasks:      { type: 'array', items: { type: 'string' } },
     done_criteria: { type: 'string' },
     verify:        { type: 'string', description: 'Shell command run from the project dir; exit 0 means done.' },
+    verify_expect: { type: 'string', description: 'Single-line regex the verify output must also match, e.g. "# pass [1-9]", so a check that runs zero tests fails.' },
     source:        { type: 'string', description: 'Opaque origin reference, e.g. "asana:1204" or "brief.md#auth".' },
   },
 };
@@ -49,6 +50,12 @@ const WORKDIR_PROP = {
 };
 const ID_PROP = {
   id: { type: 'string', description: 'Task id, e.g. "T-001".', pattern: '^T-\\d+$' },
+};
+const DECISIONS_PROP = {
+  type: 'array',
+  items: { type: 'string', maxLength: 500 },
+  maxItems: 20,
+  description: 'Choices made on this task, one short single-line sentence each (e.g. "bookmarks file lives at ~/.bookmarks.json"). Stored on the task and shown to the next agent.',
 };
 
 /** Build the tool table. `base` is the default project directory. */
@@ -104,13 +111,46 @@ function buildTools(base) {
     },
     {
       name: 'start_task',
-      description: 'Claim a task and move it pending → in-progress.',
+      description: 'Claim a task and move it pending → in-progress. Then runs its Verify once; if that ALREADY passes, the result carries a `warning` (possibly vacuous check). Never blocks.',
       inputSchema: {
         type: 'object',
-        properties: { ...PROJECT_PROP, ...ID_PROP, agent: { type: 'string', description: 'Agent name recorded on the lock.' } },
+        properties: {
+          ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP,
+          agent: { type: 'string', description: 'Agent name recorded on the lock.' },
+          red_first: { type: 'boolean', description: 'Run Verify once after starting and warn if it already passes (default true).' },
+        },
         required: ['id'],
       },
-      run: a => core.startTask(proj(a), a.id, { agent: a.agent || 'mcp' }),
+      run: a => core.startTask(proj(a), a.id, { agent: a.agent || 'mcp', redFirst: a.red_first !== false, workdir: a.workdir || '' }),
+    },
+    {
+      name: 'start_tasks',
+      description: 'Start several tasks in one call (same as start_task for each id, in order). Stops at the first failure and reports it; later ids are returned in `skipped`. Use for a whole parallel wave.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP,
+          ids: { type: 'array', items: { type: 'string', pattern: '^T-\\d+$' }, minItems: 1, maxItems: 25 },
+          agent: { type: 'string', description: 'Agent name recorded on every lock.' },
+          red_first: { type: 'boolean' },
+        },
+        required: ['ids'],
+      },
+      run: a => core.startTasks(proj(a), a.ids, { agent: a.agent || 'mcp', redFirst: a.red_first !== false }),
+    },
+    {
+      name: 'complete_tasks',
+      description: 'Complete several tasks in one call (same as complete_task for each id, in order; every task is fully verified and records evidence). Stops at the first failure; later ids are returned in `skipped`. For per-task decisions use complete_task or record_decision.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...PROJECT_PROP, ...WORKDIR_PROP,
+          ids: { type: 'array', items: { type: 'string', pattern: '^T-\\d+$' }, minItems: 1, maxItems: 25 },
+          no_verify: { type: 'boolean', description: 'Complete tasks that have no Verify command (project verify still runs).' },
+        },
+        required: ['ids'],
+      },
+      run: a => core.completeTasks(proj(a), a.ids, { noVerify: !!a.no_verify, workdir: a.workdir || '' }),
     },
     {
       name: 'verify_task',
@@ -120,16 +160,33 @@ function buildTools(base) {
     },
     {
       name: 'complete_task',
-      description: 'Move a task in-progress → completed. Runs its Verify command first and refuses on failure. (Skipping verification with --force is CLI-only.)',
+      description: 'Move a task in-progress → completed. Runs its Verify command (and the project-wide project_verify command, if set) first and refuses if either fails or the output misses verify_expect. Records an Evidence section (commands, output tail, exit code, time, git commit) in the task file. no_verify skips only the task check, never the project check. (Skipping verification with --force is CLI-only.)',
       inputSchema: {
         type: 'object',
         properties: {
           ...PROJECT_PROP, ...ID_PROP, ...WORKDIR_PROP,
           no_verify: { type: 'boolean', description: 'Complete a task that has no Verify command.' },
+          decisions: DECISIONS_PROP,
         },
         required: ['id'],
       },
-      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify, workdir: a.workdir || '' }),
+      run: a => core.completeTask(proj(a), a.id, { noVerify: !!a.no_verify, workdir: a.workdir || '', decisions: a.decisions || [] }),
+    },
+    {
+      name: 'record_decision',
+      description: 'Record choices made while working a task (where a file lives, an output format, a trade-off) so they live in the workflow state and the next agent sees them. Works on a task in any status; duplicates are skipped.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, ...ID_PROP, decisions: DECISIONS_PROP },
+        required: ['id', 'decisions'],
+      },
+      run: a => core.recordDecisions(proj(a), a.id, a.decisions),
+    },
+    {
+      name: 'list_decisions',
+      description: 'Every decision recorded on any task, in task order: [{ task, title, text }].',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP } },
+      run: a => core.listDecisions(proj(a)),
     },
     {
       name: 'block_task',
@@ -152,10 +209,44 @@ function buildTools(base) {
       run: a => core.unblockTask(proj(a), a.id),
     },
     {
+      name: 'defer_task',
+      description: 'Move a pending or blocked task to deferred (backlog): kept on record, never runnable, does not block finalize.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, ...ID_PROP, reason: { type: 'string', description: 'Why it is deferred. Single line.' } },
+        required: ['id'],
+      },
+      run: a => core.deferTask(proj(a), a.id, { reason: a.reason || '' }),
+    },
+    {
+      name: 'reopen_task',
+      description: 'Return a deferred task to pending.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
+      run: a => core.reopenTask(proj(a), a.id),
+    },
+    {
       name: 'release_task',
       description: 'Release a task\'s lock (e.g. a stale claim from a crashed agent) without changing its status.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP }, required: ['id'] },
       run: a => core.releaseTask(proj(a), a.id),
+    },
+    {
+      name: 'reset_task',
+      description: 'Move an in-progress task back to pending: releases its claim, removes it from in_progress, keeps its content. Then it can be re-planned or restarted. Pass agent to refuse when someone else holds the claim.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP, agent: { type: 'string' } }, required: ['id'] },
+      run: a => core.resetTask(proj(a), a.id, { agent: a.agent || '' }),
+    },
+    {
+      name: 'set_project_verify',
+      description: 'Set (or clear, with an empty string) the project-wide verify command stored in PROJECT_STATE.json. It runs on every task completion in addition to the task\'s own Verify, and a failure blocks completion. Omit command to just read it.',
+      inputSchema: {
+        type: 'object',
+        properties: { ...PROJECT_PROP, command: { type: 'string', description: 'Single-line shell command; empty string clears it.' } },
+      },
+      run: a => {
+        if (typeof a.command === 'string') core.setProjectVerify(proj(a), a.command);
+        return { projectVerify: core.readState(proj(a)).project_verify || '' };
+      },
     },
     {
       name: 'create_worktree',
@@ -215,7 +306,7 @@ function buildTools(base) {
     },
     {
       name: 'update_task',
-      description: 'Re-plan: edit a pending, unclaimed task in place (title, goal, context, depends_on as task ids, subtasks, done_criteria, verify, source). Only the given fields change.',
+      description: 'Re-plan: edit a pending, unclaimed task in place (or, with agent = the claimant, an in-progress task goal/context/subtasks/done_criteria/verify/source) (title, goal, context, depends_on as task ids, subtasks, done_criteria, verify, source). Only the given fields change.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -227,13 +318,15 @@ function buildTools(base) {
           subtasks:      TASK_SPEC.properties.subtasks,
           done_criteria: TASK_SPEC.properties.done_criteria,
           verify:        TASK_SPEC.properties.verify,
+          verify_expect: TASK_SPEC.properties.verify_expect,
           source:        TASK_SPEC.properties.source,
+          agent:         { type: 'string', description: 'Required to edit an in-progress task (goal, context, subtasks, done_criteria, verify, source): must be the claimant.' },
         },
         required: ['id'],
       },
       run: a => {
-        const { project, id, ...patch } = a;
-        return core.updateTask(proj(a), id, patch);
+        const { project, id, agent, ...patch } = a;
+        return core.updateTask(proj(a), id, patch, { agent: agent || '' });
       },
     },
     {
@@ -243,8 +336,14 @@ function buildTools(base) {
       run: a => core.removeTask(proj(a), a.id),
     },
     {
+      name: 'migrate_project',
+      description: 'Convert legacy (format v1) task files to format v2: YAML frontmatter, ## sections, files named by id alone. Verified field-by-field before anything is written. Use dry_run to preview.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, dry_run: { type: 'boolean' } } },
+      run: a => core.migrateProject(proj(a), { dryRun: !!a.dry_run }),
+    },
+    {
       name: 'validate',
-      description: 'Validate the state file and task graph. Returns { ok, errors }.',
+      description: 'Validate the state file and task graph. Returns { ok, errors, warnings } (warnings flag legacy-format task files).',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP } },
       run: a => core.validateProject(proj(a)),
     },
@@ -258,6 +357,13 @@ function errorResult(message) {
   return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
 }
 
+const SERVER_INSTRUCTIONS = [
+  'Git-native task workflow: state lives in the repo; completion is gated on each task\'s Verify command.',
+  'Tool loading: if your client defers tool schemas, load every workflow tool in ONE lookup (for example ToolSearch "select:plan_project,add_tasks,start_task,start_tasks,complete_task,complete_tasks,next_tasks,get_state,record_decision") instead of one per call.',
+  'Flow: plan_project (dry run, show the user the waves) -> add_tasks -> start_tasks for a whole wave -> do the work -> complete_tasks. Pass a distinct `agent` name per parallel agent.',
+  'Write down choices with record_decision (or `decisions` on complete_task). To change a started task, reset_task or update_task as its claimant; park backlog with defer_task.',
+].join('\n');
+
 /** Create and connect the MCP server. Returns the connected Server. */
 async function runServer(base = '.') {
   const tools = buildTools(base);
@@ -265,7 +371,7 @@ async function runServer(base = '.') {
 
   const server = new Server(
     { name: 'agent-workflow', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

@@ -1,0 +1,3 @@
+locks/
+state.lock
+*.tmp

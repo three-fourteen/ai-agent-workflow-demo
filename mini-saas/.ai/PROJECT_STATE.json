@@ -3,5 +3,6 @@
   "phase": "prototype",
   "current_task": "T-001",
   "blocked": false,
-  "completed_tasks": []
+  "completed_tasks": [],
+  "format_version": 2
 }

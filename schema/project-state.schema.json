@@ -22,7 +22,7 @@
     },
     "blocked": {
       "type": "boolean",
-      "description": "True when any task is blocked."
+      "description": "True when any task is blocked. Deferred (backlog) tasks do not count: they never block finalize."
     },
     "completed_tasks": {
       "type": "array",
@@ -38,6 +38,15 @@
       "type": "array",
       "items": { "type": "string", "pattern": "^T-\\d+$" },
       "description": "Task ids completed without a passing Verify check (--force / --no-verify)."
+    },
+    "project_verify": {
+      "type": "string",
+      "description": "Optional project-wide check run (in addition to the task's own Verify) on every task completion; a failure blocks completion."
+    },
+    "format_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Task file format: 2 = YAML frontmatter + ## sections, files named by id (T-001.md). Absent or 1 = legacy loose Key: value files; run `agent-workflow migrate`."
     },
     "max_task_id": {
       "type": "integer",

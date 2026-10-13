@@ -84,7 +84,7 @@ test('an illegal transition surfaces as an MCP tool error', async () => {
 test('validate reports ok for a fresh project', async () => {
   await withServer(async ({ client }) => {
     const res = await client.callTool({ name: 'validate', arguments: {} });
-    assert.deepEqual(payload(res), { ok: true, errors: [] });
+    assert.deepEqual(payload(res), { ok: true, errors: [], warnings: [] });
   });
 });
 
@@ -247,4 +247,163 @@ test('create_worktree + workdir: verify runs against the task branch', async () 
     await client.close();
     rmSync(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// T-003: reset_task and in-progress update_task
+// ---------------------------------------------------------------------------
+
+test('update_task edits in-progress tasks for the claimant; reset_task returns them to pending', async () => {
+  await withServer(async ({ client, proj }) => {
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001', agent: 'alice' } });
+    const other = await client.callTool({ name: 'update_task', arguments: { id: 'T-001', verify: 'true', agent: 'bob' } });
+    assert.equal(other.isError, true);
+    assert.match(other.content[0].text, /claimed by 'alice'/);
+    const ok = await client.callTool({ name: 'update_task', arguments: { id: 'T-001', verify: 'true', agent: 'alice' } });
+    assert.notEqual(ok.isError, true);
+    assert.equal(core.findTask(proj, 'T-001').verify, 'true');
+
+    const reset = await client.callTool({ name: 'reset_task', arguments: { id: 'T-001' } });
+    assert.equal(payload(reset).status, 'pending');
+    assert.equal(core.findTask(proj, 'T-001').status, 'pending');
+    assert.deepEqual(core.readState(proj).in_progress, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-004: deferred status
+// ---------------------------------------------------------------------------
+
+test('defer_task and reopen_task drive the deferred status', async () => {
+  await withServer(async ({ client, proj }) => {
+    const { tools } = await client.listTools();
+    assert.ok(tools.some(t => t.name === 'defer_task') && tools.some(t => t.name === 'reopen_task'));
+    const d = payload(await client.callTool({ name: 'defer_task', arguments: { id: 'T-002', reason: 'backlog' } }));
+    assert.equal(d.status, 'deferred');
+    assert.equal(core.findTask(proj, 'T-002').status, 'deferred');
+    const bad = await client.callTool({ name: 'defer_task', arguments: { id: 'T-002' } });
+    assert.equal(bad.isError, true);
+    const o = payload(await client.callTool({ name: 'reopen_task', arguments: { id: 'T-002' } }));
+    assert.equal(o.status, 'pending');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-005: project-wide verify, verify_expect, evidence, red-first (MCP)
+// ---------------------------------------------------------------------------
+
+test('MCP schemas expose verify_expect, red_first and set_project_verify', async () => {
+  await withServer(async ({ client }) => {
+    const { tools } = await client.listTools();
+    const by = Object.fromEntries(tools.map(t => [t.name, t]));
+    assert.ok(by.add_tasks.inputSchema.properties.tasks.items.properties.verify_expect);
+    assert.ok(by.plan_project.inputSchema.properties.tasks.items.properties.verify_expect);
+    assert.ok(by.update_task.inputSchema.properties.verify_expect);
+    assert.ok(by.start_task.inputSchema.properties.red_first);
+    assert.ok(by.set_project_verify.inputSchema.properties.command);
+  });
+});
+
+test('set_project_verify blocks complete_task; evidence and red-first warning via MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    const set = payload(await client.callTool({ name: 'set_project_verify', arguments: { command: 'exit 4' } }));
+    assert.equal(set.projectVerify, 'exit 4');
+    await client.callTool({ name: 'update_task', arguments: { id: 'T-001', verify: 'echo "# pass 3"', verify_expect: '# pass [1-9]' } });
+
+    const started = payload(await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } }));
+    assert.match(started.warning, /already passes/);
+
+    const blocked = await client.callTool({ name: 'complete_task', arguments: { id: 'T-001' } });
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.content[0].text, /project verification failed/);
+
+    assert.equal(payload(await client.callTool({ name: 'set_project_verify', arguments: { command: '' } })).projectVerify, '');
+    const done = payload(await client.callTool({ name: 'complete_task', arguments: { id: 'T-001' } }));
+    assert.equal(done.verified, true);
+    const file = core.findTask(proj, 'T-001').file;
+    const raw = readFileSync(join(proj, 'tasks', file), 'utf8');
+    assert.match(raw, /^## Evidence$/m);
+    assert.match(raw, /task verify: `echo "# pass 3"` exit 0, matched/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-006: migrate_project
+// ---------------------------------------------------------------------------
+
+test('migrate_project previews with dry_run and converts legacy task files', async () => {
+  await withServer(async ({ client, proj }) => {
+    require('node:fs').writeFileSync(require('node:path').join(proj, 'tasks', 'T-099-legacy.md'),
+      'Status: pending\nGoal: old\nDependencies: none\nVerify: true\n');
+    const dry = payload(await client.callTool({ name: 'migrate_project', arguments: { dry_run: true } }));
+    assert.equal(dry.dryRun, true);
+    assert.deepEqual(dry.migrated, [{ id: 'T-099', from: 'T-099-legacy.md', to: 'T-099.md' }]);
+    const v = payload(await client.callTool({ name: 'validate', arguments: {} }));
+    assert.match(v.warnings[0], /legacy format \(T-099\)/);
+
+    const done = payload(await client.callTool({ name: 'migrate_project', arguments: {} }));
+    assert.equal(done.migrated.length, 1);
+    assert.equal(core.findTask(proj, 'T-099').format, 2);
+    assert.deepEqual(payload(await client.callTool({ name: 'validate', arguments: {} })).warnings, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-007: decisions
+// ---------------------------------------------------------------------------
+
+test('record_decision, list_decisions and complete_task decisions work over MCP', async () => {
+  await withServer(async ({ client, proj }) => {
+    const { tools } = await client.listTools();
+    for (const n of ['record_decision', 'list_decisions']) assert.ok(tools.some(t => t.name === n), n);
+    const complete = tools.find(t => t.name === 'complete_task');
+    assert.equal(complete.inputSchema.properties.decisions.type, 'array');
+
+    const rec = payload(await client.callTool({ name: 'record_decision', arguments: { id: 'T-001', decisions: ['kept it small'] } }));
+    assert.deepEqual(rec.decisions, ['kept it small']);
+    const bad = await client.callTool({ name: 'record_decision', arguments: { id: 'T-001', decisions: ['a\nb'] } });
+    assert.equal(bad.isError, true);
+
+    await client.callTool({ name: 'start_task', arguments: { id: 'T-001' } });
+    await client.callTool({ name: 'complete_task', arguments: { id: 'T-001', no_verify: true, decisions: ['finished early'] } });
+    const all = payload(await client.callTool({ name: 'list_decisions', arguments: {} }));
+    assert.deepEqual(all.map(d => d.text), ['kept it small', 'finished early']);
+    assert.deepEqual(core.findTask(proj, 'T-001').decisions, ['kept it small', 'finished early']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-008: batch tools and server instructions
+// ---------------------------------------------------------------------------
+
+test('server instructions tell agents to load all workflow tools in one lookup', async () => {
+  await withServer(async ({ client }) => {
+    const text = client.getInstructions();
+    assert.match(text, /ONE lookup/);
+    assert.match(text, /select:plan_project,add_tasks,start_task,start_tasks,complete_task,complete_tasks/);
+    const { tools } = await client.listTools();
+    const names = new Set(tools.map(t => t.name));
+    // every tool the hint names must really exist
+    for (const n of /select:([\w,]+)/.exec(text)[1].split(',')) assert.ok(names.has(n), `instructions name unknown tool ${n}`);
+  });
+});
+
+test('start_tasks and complete_tasks run a wave in one call each', async () => {
+  await withServer(async ({ client, proj }) => {
+    const ids = core.listTasks(proj).map(t => t.id);
+    assert.ok(ids.length >= 1);
+    const started = payload(await client.callTool({ name: 'start_tasks', arguments: { ids: [ids[0]], agent: 'wave', red_first: false } }));
+    assert.equal(started.ok, true);
+    assert.equal(core.findTask(proj, ids[0]).status, 'in-progress');
+
+    const done = payload(await client.callTool({ name: 'complete_tasks', arguments: { ids: [ids[0]], no_verify: true } }));
+    assert.equal(done.ok, true);
+    assert.equal(core.findTask(proj, ids[0]).status, 'completed');
+
+    const bad = payload(await client.callTool({ name: 'complete_tasks', arguments: { ids: [ids[0]] } }));
+    assert.equal(bad.ok, false);                       // already completed: reported, not thrown
+    assert.equal(bad.failed.id, ids[0]);
+    const invalid = await client.callTool({ name: 'complete_tasks', arguments: { ids: [] } });
+    assert.equal(invalid.isError, true);
+  });
 });

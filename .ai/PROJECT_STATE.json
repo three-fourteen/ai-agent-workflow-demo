@@ -1,0 +1,21 @@
+{
+  "project": "ai-agent-workflow-demo",
+  "phase": "completed",
+  "current_task": null,
+  "blocked": false,
+  "completed_tasks": [
+    "T-001",
+    "T-002",
+    "T-003",
+    "T-004",
+    "T-005",
+    "T-006",
+    "T-007",
+    "T-008"
+  ],
+  "description": "Improve the agent-workflow CLI and MCP server based on two real-world usage reviews",
+  "max_task_id": 8,
+  "in_progress": [],
+  "project_verify": "npm test",
+  "format_version": 2
+}

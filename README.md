@@ -72,7 +72,7 @@ Tasks include:
 
 A working zero-dependency CLI bookmark manager, built **end to end through the MCP
 tools** starting from `bookmarks/brief.md`: `init_project` (in place) → `set_brief` →
-`plan_project` → `add_tasks` → `start_task` / `complete_task` with real `Verify:`
+`plan_project` → `add_tasks` → `start_task(s)` / `complete_task(s)` with real `Verify:`
 commands. It also shows mid-run re-planning (`remove_task`, `add_tasks`, `update_task`).
 Unlike the other demos it contains real code: `cd bookmarks && npm test`.
 
@@ -235,6 +235,34 @@ agent-workflow task add my-app "Build dashboard" --after T-001
 agent-workflow task add "Setup project"
 ```
 
+### Task file format
+
+Each task is `tasks/T-007.md`, named by id alone, so renaming a task never moves the file.
+Single-line fields live in YAML frontmatter (values are JSON strings, so any character is
+safe); the body is free-form Markdown divided by `## ` section headings.
+
+```markdown
+---
+title: "Record decisions on tasks"
+status: pending
+goal: "Choices made during a task live in workflow state"
+dependencies: ["T-006"]
+verify: "node --test cli/core.test.js"
+---
+
+## Context
+Any text, including lines like `Status: done` or `Verify: x`.
+
+## Done Criteria
+Decisions survive complete and show up in status.
+
+## Blockers
+None
+```
+
+Projects created before this format (`Status:` / `Goal:` lines) keep working and can be
+converted with [`migrate`](#migrate). `PROJECT_STATE.json` records `format_version: 2`.
+
 ### status
 
 Prints an overview of projects. When run from inside a project directory it shows that project; otherwise it scans subdirectories.
@@ -242,14 +270,14 @@ Prints an overview of projects. When run from inside a project directory it show
 ```
 Project        Phase      Current Task                 Done   Blocked
 ---------------------------------------------------------------------
-my-app         prototype  T-001-setup-project          0/2    no
-social-feed    prototype  T-001-setup-project          0/4    no
+my-app         prototype  T-001                        0/2    no
+social-feed    prototype  T-001                        0/4    no
 ```
 
 ### task start / complete / block / unblock
 
 The CLI owns state transitions. Agents never hand-edit `PROJECT_STATE.json` or a
-task's `Status:` line — they call these commands, and the CLI enforces the state
+task's `status` field — they call these commands, and the CLI enforces the state
 machine.
 
 ```
@@ -327,19 +355,28 @@ file mutations.
 | | `list_tasks` | All tasks with status, dependencies and verify command |
 | | `get_task` | One task, including its raw file |
 | | `next_tasks` | Runnable tasks: pending, dependencies done, unclaimed (`all=false` for just the first) |
-| | `validate` | Check the state file and task graph → `{ ok, errors }` |
-| Execute | `start_task` | Claim a task (atomic lock) and move it `pending → in-progress` |
+| | `list_decisions` | Every recorded decision, by task |
+| | `validate` | Check the state file and task graph → `{ ok, errors, warnings }` |
+| Execute | `start_task` / `start_tasks` | Claim a task (or a whole wave, in order) and move it `pending → in-progress`; warns if its `Verify` already passes |
 | | `verify_task` | Run a task's `Verify:` command without changing status (optional `workdir`) |
-| | `complete_task` | Run `Verify:` first, then `in-progress → completed`; refuses on failure (optional `workdir`) |
+| | `complete_task` / `complete_tasks` | Run `Verify:` (and the project verify) first, then `in-progress → completed`, recording evidence; refuses on failure. The batch form stops at the first failure |
+| | `record_decision` | Record choices made on a task so the next agent sees them |
 | | `block_task` / `unblock_task` | Mark a task blocked with a reason, or return it to pending |
+| | `defer_task` / `reopen_task` | Park a task as backlog (does not block `finalize`), or bring it back |
+| | `reset_task` | Return an in-progress task to pending, releasing its claim |
 | | `release_task` | Clear a stale lock without changing status |
+| | `set_project_verify` | Set the project-wide check that runs on every completion |
 | | `create_worktree` | Isolate a task on its own git worktree and branch (see below) |
 | Bootstrap | `init_project` | Scaffold a project (`name: "."` for in place) |
 | | `set_brief` | Store the source brief text in `docs/brief.md` |
 | | `plan_project` | Dry-run a task plan; returns resolved ids and parallel `waves`, writes nothing |
 | | `add_tasks` | Write an approved plan atomically (all tasks or none) |
-| Re-plan | `update_task` | Edit a pending, unclaimed task in place |
+| | `migrate_project` | Convert legacy task files to the current format (`dry_run` to preview) |
+| Re-plan | `update_task` | Edit a pending task in place, or an in-progress one as its claimant (`agent`) |
 | | `remove_task` | Delete a pending, unclaimed task nothing depends on |
+
+The server also sends `instructions` that tell agents to load all workflow tools in one
+lookup when their client defers tool schemas, instead of one lookup per call.
 
 Every tool except `init_project` takes an optional `project` directory.
 
@@ -452,8 +489,10 @@ itself: the agent reads it (a file, Asana, anything) and passes the text in.
    every `verify` command so it can be reviewed.
 
 Tasks in a plan reference each other by a local `key`; ids (`T-001`…) are assigned
-on write. Free text may not contain lines starting with `Status:`, `Dependencies:`,
-`Goal:`, `Verify:` or `Source:`, since the task parser would read them as fields.
+on write. Free text can contain any line, including ones that look like fields
+(`Status: …`, `Verify: …`); the only lines it cannot contain are the task's own section
+headings (`## Context`, `## Subtasks`, `## Done Criteria`, `## Next Step`, `## Blockers`,
+`## Evidence`).
 
 #### Re-planning
 
@@ -461,7 +500,8 @@ Plans change. Tasks that haven't started can be edited without touching files by
 
 - `update_task` — patches only the fields you pass (`title`, `goal`, `context`,
   `depends_on` as task ids, `subtasks`, `done_criteria`, `verify`, `source`).
-  Everything else in the file is preserved. Changing `title` renames the file.
+  Everything else in the file is preserved. Changing `title` edits the frontmatter; the
+  file is named by id and never renamed.
   Unknown dependencies and cycles are rejected.
 - `remove_task` — deletes a task nothing else depends on, and repoints
   `current_task` if needed.
@@ -474,6 +514,34 @@ can't silently point at a different task.
 ```
 agent-workflow mcp                # serve the current project
 ```
+
+### Recording decisions
+
+Choices made while working a task (where a file lives, an output format, a trade-off) used
+to exist only in chat. Record them on the task so the next agent sees them:
+
+```bash
+agent-workflow task decide T-003 --decision "bookmarks file lives at ~/.bookmarks.json"
+agent-workflow task complete T-003 --decision "tags are lower-cased"   # same, at completion
+agent-workflow decisions [--json]                                      # every decision, by task
+```
+
+Decisions are stored as bullets under `## Decisions` in the task file (one line each, 500
+characters at most, duplicates skipped) and work on a task in any status. `status` shows the
+count, and `plan` / `start` print the latest ones. MCP: `record_decision`, `list_decisions`,
+and a `decisions` argument on `complete_task`.
+
+### migrate
+
+```bash
+agent-workflow migrate [<project>] [--dry-run]
+```
+
+Converts legacy (format v1) task files to the current format, in place. Every converted
+file is re-parsed and compared field by field with the original before anything is
+written; if a field would change, nothing is written. Lines that fit no section are kept
+under `## Notes`. `--dry-run` lists what would change. It is idempotent, and `validate`
+warns while legacy files remain. Mixed projects work: each file is read in its own format.
 
 ### plan
 
