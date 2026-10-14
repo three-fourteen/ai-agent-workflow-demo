@@ -216,7 +216,7 @@ function verifyProject(dir, verifyCmd) {
   core.initProject(proj, '');
   core.addTask(proj, 'Task');
   const f = join(proj, 'tasks', 'T-001.md');
-  const body = require('fs').readFileSync(f, 'utf8').replace(/^verify:.*$/m, `verify: ${JSON.stringify(verifyCmd)}`);
+  const body = require('fs').readFileSync(f, 'utf8').replace(/^verify:.*$/m, () => `verify: ${JSON.stringify(verifyCmd)}`);
   writeFileSync(f, body, 'utf8');
   core.startTask(proj, 'T-001');
   return proj;
@@ -1309,4 +1309,28 @@ test('batch: input is validated', () => withTmp(dir => {
   assert.throws(() => core.startTasks(dir, ['T-001', 't-001']), /must not repeat/);
   assert.throws(() => core.startTasks(dir, Array.from({ length: 26 }, (_, i) => `T-${i + 1}`)), /at most 25/);
   assert.throws(() => core.completeTasks(dir, ['T-001'], { decisions: ['x'] }), /per task/);
+}));
+
+// ---------------------------------------------------------------------------
+// Flaky verifier: infrastructure errors vs assertion failures
+// ---------------------------------------------------------------------------
+
+test('a missing verify tool is an infra error, task stays in-progress and retryable', () => withTmp(dir => {
+  const proj = verifyProject(dir, 'afw-no-such-binary-xyz');
+  assert.throws(() => core.completeTask(proj, 'T-001'), /errored for T-001.*not an assertion failure.*stays in-progress/s);
+  assert.equal(core.findTask(proj, 'T-001').status, 'in-progress');
+}));
+
+test('an assertion failure keeps the plain "verification failed" message', () => withTmp(dir => {
+  const proj = verifyProject(dir, 'exit 1');
+  const v = core.verifyTask(proj, 'T-001');
+  assert.equal(v.infra, false);
+  assert.throws(() => core.completeTask(proj, 'T-001'), /verification failed for T-001 \(exit 1\)/);
+}));
+
+test('a killed verify command is flagged infra', () => withTmp(dir => {
+  const proj = verifyProject(dir, 'kill -9 $$');
+  const v = core.verifyTask(proj, 'T-001');
+  assert.equal(v.infra, true);
+  assert.equal(v.ok, false);
 }));

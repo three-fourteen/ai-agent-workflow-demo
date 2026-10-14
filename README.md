@@ -300,6 +300,20 @@ agent-workflow task complete T-001         # blocked if Verify fails
 agent-workflow task complete T-001 --force # override (records it as unverified)
 agent-workflow task complete T-001 --no-verify   # accept a task that has no Verify command
 ```
+**Flaky verifiers.** A failed check is classified so transient problems never become
+false completions *or* dead ends:
+
+| Outcome | Examples | Result |
+|---|---|---|
+| Assertion failure | non-zero exit, `Verify-Expect` mismatch | `verification failed …` |
+| Infrastructure error | timeout, killed by signal, command not found (126/127), spawn error | `verification errored …` / `timed out …` |
+
+In both cases the task is **not** completed and stays `in-progress`, so it can be
+re-run until a clean run is recorded in `Evidence:`. Set `AFW_VERIFY_INFRA_RETRIES=N`
+to automatically retry infrastructure errors (never assertion failures, which would
+only hide a real flake). `task verify` / `verify_task` results expose `infra`,
+`signal` and `attempts`.
+
 
 ### next
 
