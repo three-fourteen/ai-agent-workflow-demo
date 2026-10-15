@@ -1267,7 +1267,10 @@ function runCommand(command, cwd, { inherit = false } = {}) {
   }
   const timedOut = !!(res.error && res.error.code === 'ETIMEDOUT');
   const code = res.status === null || res.status === undefined ? 1 : res.status;
-  return { code, stdout, stderr, timedOut };
+  // Infrastructure/tool error: the check never got to judge the work (spawn failure,
+  // timeout, killed by a signal, shell could not find/execute the command).
+  const infra = !!res.error || !!res.signal || code === 126 || code === 127;
+  return { code, stdout, stderr, timedOut, infra, signal: res.signal || '' };
 }
 
 /** Does `output` satisfy a `Verify-Expect:` regex? An empty expectation always matches. */
@@ -1276,9 +1279,18 @@ function matchesExpect(expect, output) {
   try { return new RegExp(expect, 'm').test(output); } catch { return false; }
 }
 
+// Extra attempts after an infrastructure error (never after an assertion failure,
+// which would only mask a real flake as a pass). Opt-in: 0 by default.
+const VERIFY_INFRA_RETRIES = Math.max(0, Number(process.env.AFW_VERIFY_INFRA_RETRIES) || 0);
+
 /** Run a command and apply its optional expectation → a verification record. */
 function runCheck(command, expect, cwd, inherit) {
-  const r = runCommand(command, cwd, { inherit });
+  let r = runCommand(command, cwd, { inherit });
+  let attempts = 1;
+  while (r.infra && attempts <= VERIFY_INFRA_RETRIES) {
+    r = runCommand(command, cwd, { inherit });
+    attempts++;
+  }
   const expectMatched = r.code !== 0 ? null : matchesExpect(expect, `${r.stdout}\n${r.stderr}`);
   return {
     ran: true,
@@ -1288,13 +1300,22 @@ function runCheck(command, expect, cwd, inherit) {
     expect: expect || '',
     expectMatched,
     timedOut: r.timedOut,
+    infra: r.infra,
+    signal: r.signal,
+    attempts,
     stdout: r.stdout,
     stderr: r.stderr,
   };
 }
 
 function failureReason(label, id, v) {
-  if (v.timedOut) return `${label} timed out for ${id} after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s. Not completed.`;
+  // Infra errors are not verdicts on the work: the task stays in-progress and can simply be re-run.
+  if (v.infra && !v.timedOut) {
+    const why = v.signal ? `killed by ${v.signal}` : `exit ${v.code}`;
+    return `${label} errored for ${id} (${why}) — the check itself could not run, so this is not an assertion failure. ` +
+           `Not completed; ${id} stays in-progress, re-run to retry.`;
+  }
+  if (v.timedOut) return `${label} timed out for ${id} after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s (infrastructure error, not an assertion failure). Not completed; ${id} stays in-progress, re-run to retry.`;
   if (v.code === 0) return `${label} failed for ${id}: passed (exit 0) but its output did not match Verify-Expect /${v.expect}/. Not completed.`;
   return `${label} failed for ${id} (exit ${v.code}). Not completed.`;
 }
