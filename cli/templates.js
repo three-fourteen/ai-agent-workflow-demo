@@ -56,7 +56,8 @@ You are in EXECUTION mode.
 If the agent-workflow MCP server is connected (and the CLI is not on your PATH),
 use its tools instead of the commands above: get_state, next_tasks, start_task /
 start_tasks (pass a distinct \`agent\` name), complete_task / complete_tasks,
-block_task, defer_task, reset_task, record_decision, validate. If your client defers
+block_task, defer_task, reset_task, record_decision, validate. Claims are leases (30 min):
+for long work call heartbeat_task (or \`agent-workflow heartbeat <id>\`) periodically. If your client defers
 tool schemas, load them all in one lookup, not one per call.
 
 Write down choices you make (where a file lives, an output format, a trade-off):

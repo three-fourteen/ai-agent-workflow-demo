@@ -212,6 +212,7 @@ agent-workflow task unblock [<project>] <id>
 agent-workflow next [<project>] [--all] [--json]
 agent-workflow claim [<project>] <id> [--agent NAME]
 agent-workflow release [<project>] <id>
+agent-workflow heartbeat [<project>] <id> [--agent NAME]
 agent-workflow worktree [<project>] <id>
 agent-workflow status [<project>]
 agent-workflow validate [<project>]
@@ -349,6 +350,20 @@ agent-workflow claim T-002 --agent alice
 agent-workflow release T-002
 ```
 
+### heartbeat / lease expiry
+
+A claim is a **lease**: it expires 30 minutes after it was taken or last renewed
+(`AFW_LEASE_TTL_MS` overrides). If an agent crashes, another agent can simply run
+`task start <id>` on the in-progress task and take it over (status unchanged, the output
+says who it was reclaimed from). `validate` warns about expired leases. Agents doing long
+work should renew periodically; only the claimant can.
+
+```
+agent-workflow heartbeat T-002 --agent alice     # MCP: heartbeat_task
+```
+
+Locks written before leases existed never expire; clear those with `release`.
+
 ### worktree
 
 Creates a git worktree on a `task/<id>-...` branch (placed beside the repo) so an
@@ -389,6 +404,7 @@ file mutations.
 | | `block_task` / `unblock_task` | Mark a task blocked with a reason, or return it to pending |
 | | `defer_task` / `reopen_task` | Park a task as backlog (does not block `finalize`), or bring it back |
 | | `reset_task` | Return an in-progress task to pending, releasing its claim |
+| | `heartbeat_task` | Renew the lease on a task you started (claims expire after 30 min without one; an expired claim can be reclaimed by `start_task`) |
 | | `release_task` | Clear a stale lock without changing status |
 | | `set_project_verify` | Set the project-wide check that runs on every completion |
 | | `create_worktree` | Isolate a task on its own git worktree and branch (see below) |
