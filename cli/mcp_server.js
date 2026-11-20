@@ -98,6 +98,7 @@ const OUTPUT_SCHEMAS = {
   reopen_task: TRANSITION,
   reset_task: obj({ taskId: str, status: STATUS, currentTask: nullableStr }, ['taskId', 'status']),
   release_task: obj({ taskId: str }, ['taskId']),
+  heartbeat_task: obj({ taskId: str, agent: str, expires: str }, ['taskId', 'expires']),
   set_project_verify: obj({ projectVerify: nullableStr }),
   create_worktree: obj({ branch: str, path: str }, ['branch', 'path']),
   init_project: obj({ projectName: str, path: str }, ['projectName']),

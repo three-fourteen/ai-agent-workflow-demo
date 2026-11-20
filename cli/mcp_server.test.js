@@ -439,6 +439,7 @@ test('results carry structuredContent that validates; arrays are wrapped, text i
     await call('get_task', { id: 'T-001' });
     await call('next_tasks');
     await call('start_task', { id: 'T-001', agent: 'a' });
+    await call('heartbeat_task', { id: 'T-001', agent: 'a' });
     await call('verify_task', { id: 'T-001' });
     await call('record_decision', { id: 'T-001', decisions: ['x'] });
     await call('list_decisions');
