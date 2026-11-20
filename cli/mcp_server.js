@@ -231,6 +231,12 @@ function buildTools(base) {
       run: a => core.releaseTask(proj(a), a.id),
     },
     {
+      name: 'heartbeat_task',
+      description: 'Renew the lease on a task you started. Claims expire after 30 minutes (AFW_LEASE_TTL_MS) without a heartbeat, after which another agent may reclaim the task with start_task. Call it every few minutes during long work. Pass agent to refuse when someone else holds the claim.',
+      inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP, agent: { type: 'string' } }, required: ['id'] },
+      run: a => core.heartbeatTask(proj(a), a.id, { agent: a.agent || '' }),
+    },
+    {
       name: 'reset_task',
       description: 'Move an in-progress task back to pending: releases its claim, removes it from in_progress, keeps its content. Then it can be re-planned or restarted. Pass agent to refuse when someone else holds the claim.',
       inputSchema: { type: 'object', properties: { ...PROJECT_PROP, ...ID_PROP, agent: { type: 'string' } }, required: ['id'] },

@@ -934,7 +934,7 @@ function updateTask(project, taskId, patch = {}, { agent = '' } = {}) {
   if (task.status === 'in-progress') {
     // A started task may be re-scoped, but only by the agent that claimed it.
     const held = readLock(project, task.id);
-    if (held && held.agent !== agent) {
+    if (held && held.agent !== agent && !leaseExpired(held)) {
       throw new WorkflowError(
         `${task.id} is in progress, claimed by '${held.agent}'; only that agent can update it` +
         `${agent ? ` (you passed '${agent}')` : ' (pass agent)'}.`);
@@ -1102,6 +1102,19 @@ function listLocks(projectDir) {
   }
 }
 
+// A claim is a lease: it expires LEASE_TTL_MS after the last heartbeat, so a crashed
+// agent cannot hold a task forever. Locks written before leases (no `expires`) never expire.
+const LEASE_TTL_MS = Number(process.env.AFW_LEASE_TTL_MS) || 30 * 60 * 1000;
+
+function leaseExpired(lock, now = Date.now()) {
+  return !!(lock && lock.expires && Date.parse(lock.expires) < now);
+}
+
+function leaseRecord(agent, ttlMs = LEASE_TTL_MS, extra = {}) {
+  const now = Date.now();
+  return JSON.stringify({ agent, ts: new Date(now).toISOString(), expires: new Date(now + ttlMs).toISOString(), ...extra });
+}
+
 function readLock(projectDir, taskId) {
   try {
     return JSON.parse(fs.readFileSync(lockPath(projectDir, taskId), 'utf8'));
@@ -1114,19 +1127,20 @@ function readLock(projectDir, taskId) {
  * Atomically claim a task. The `wx` flag makes the write fail if the lock file
  * already exists — race-safe across concurrent processes, no dependency needed.
  */
-function acquireLock(projectDir, taskId, agent = 'agent') {
+function acquireLock(projectDir, taskId, agent = 'agent', { ttlMs = LEASE_TTL_MS } = {}) {
   fs.mkdirSync(locksDir(projectDir), { recursive: true });
-  const record = JSON.stringify({ agent, ts: new Date().toISOString() });
-  try {
-    fs.writeFileSync(lockPath(projectDir, taskId), record, { flag: 'wx', encoding: 'utf8' });
-  } catch (err) {
-    if (err.code === 'EEXIST') {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.writeFileSync(lockPath(projectDir, taskId), leaseRecord(agent, ttlMs), { flag: 'wx', encoding: 'utf8' });
+      return;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
       const held = readLock(projectDir, taskId);
+      if (attempt === 0 && leaseExpired(held)) { releaseLock(projectDir, taskId); continue; } // dead agent: take over
       throw new WorkflowError(
         `${taskId} is already claimed${held && held.agent ? ` by '${held.agent}'` : ''}. ` +
         `Release it with \`agent-workflow release ${taskId}\` first.`);
     }
-    throw err;
   }
 }
 
@@ -1233,7 +1247,12 @@ function startTaskLocked(project, taskId, { agent = 'agent' } = {}) {
   }
   if (task.status === 'in-progress') {
     const held = readLock(project, task.id);
-    if (held) throw new WorkflowError(`${task.id} is already in progress, claimed by '${held.agent}'.`);
+    if (held && !leaseExpired(held)) throw new WorkflowError(`${task.id} is already in progress, claimed by '${held.agent}'.`);
+    if (held) { // lease expired: the previous agent is presumed dead — reclaim, status unchanged
+      releaseLock(project, task.id);
+      acquireLock(project, task.id, agent);
+      return { taskId: task.id, status: 'in-progress', reclaimedFrom: held.agent };
+    }
   }
   assertTransition(task.status, 'in-progress');
 
@@ -1624,6 +1643,22 @@ function claimTask(project, taskId, { agent = 'agent' } = {}) {
 }
 
 /**
+ * Renew a task's lease. Only the claimant may renew; an expired-but-untaken lease can
+ * still be renewed by its owner. Call periodically during long work.
+ */
+function heartbeatTask(project, taskId, { agent = '', ttlMs = LEASE_TTL_MS } = {}) {
+  requireProjectDir(project);
+  const task = findTask(project, taskId);
+  const held = readLock(project, task.id);
+  if (!held) throw new WorkflowError(`${task.id} has no claim to renew; start it first.`);
+  if (agent && held.agent !== agent) {
+    throw new WorkflowError(`${task.id} is claimed by '${held.agent}', not '${agent}'.`);
+  }
+  fs.writeFileSync(lockPath(project, task.id), leaseRecord(held.agent, ttlMs, held.since ? { since: held.since } : { since: held.ts }), 'utf8');
+  return { taskId: task.id, agent: held.agent, expires: readLock(project, task.id).expires };
+}
+
+/**
  * in-progress → pending. Drops the claim and the in_progress entry, keeps the task
  * content. With `agent`, refuses when the task is claimed by a different agent.
  */
@@ -1824,6 +1859,12 @@ function validateProject(project) {
   if (legacy.length) {
     warnings.push(`${legacy.length} task file(s) use the legacy format (${legacy.join(', ')}); run \`agent-workflow migrate\``);
   }
+  for (const id of listLocks(project)) {
+    const held = readLock(project, id);
+    if (leaseExpired(held)) {
+      warnings.push(`${id}'s lease (agent '${held.agent}') expired ${held.expires}; another agent can reclaim it with start, or run \`agent-workflow release ${id}\``);
+    }
+  }
   return { ok: errors.length === 0, errors, warnings };
 }
 
@@ -1910,6 +1951,8 @@ module.exports = {
   claimTask: locked(claimTask),
   releaseTask: locked(releaseTask),
   resetTask: locked(resetTask),
+  heartbeatTask: locked(heartbeatTask),
+  leaseExpired,
   listLocks,
   readLock,
   worktreePlan,

@@ -1347,3 +1347,58 @@ test('initProject writes a root AGENTS.md and never overwrites an existing one',
   core.initProject(b, '', { inPlace: true });
   assert.equal(fs.readFileSync(join(b, 'AGENTS.md'), 'utf8'), 'mine\n');
 }));
+
+// ---------------------------------------------------------------------------
+// Lease: claims expire without a heartbeat
+// ---------------------------------------------------------------------------
+
+function expireLease(proj, id, expires = new Date(Date.now() - 1000).toISOString()) {
+  const f = join(proj, '.ai', 'locks', `${id}.lock`);
+  const lock = JSON.parse(require('node:fs').readFileSync(f, 'utf8'));
+  writeFileSync(f, JSON.stringify({ ...lock, expires }));
+}
+
+test('a claim carries an expiry; heartbeat renews it and only for the claimant', () => withTmp(dir => {
+  const proj = diamondProject(dir);
+  core.startTask(proj, 'T-001', { agent: 'alice' });
+  const before = core.readLock(proj, 'T-001');
+  assert.ok(Date.parse(before.expires) > Date.now());
+  expireLease(proj, 'T-001', new Date(Date.now() + 1000).toISOString());
+  const r = core.heartbeatTask(proj, 'T-001', { agent: 'alice' });
+  assert.ok(Date.parse(r.expires) > Date.now() + 60_000, 'lease extended');
+  assert.throws(() => core.heartbeatTask(proj, 'T-001', { agent: 'bob' }), /claimed by 'alice'/);
+  assert.throws(() => core.heartbeatTask(proj, 'T-002', {}), /no claim to renew/);
+}));
+
+test('an unexpired claim blocks others; an expired one is reclaimed by start', () => withTmp(dir => {
+  const proj = diamondProject(dir);
+  core.startTask(proj, 'T-001', { agent: 'alice' });
+  assert.throws(() => core.startTask(proj, 'T-001', { agent: 'bob' }), /claimed by 'alice'/);
+
+  expireLease(proj, 'T-001');
+  const r = core.startTask(proj, 'T-001', { agent: 'bob' });
+  assert.equal(r.reclaimedFrom, 'alice');
+  assert.equal(core.readLock(proj, 'T-001').agent, 'bob');
+  assert.equal(core.findTask(proj, 'T-001').status, 'in-progress');
+  assert.throws(() => core.heartbeatTask(proj, 'T-001', { agent: 'alice' }), /claimed by 'bob'/);
+}));
+
+test('an expired lock on a pending task is taken over by claim; legacy locks never expire', () => withTmp(dir => {
+  const proj = diamondProject(dir);
+  core.claimTask(proj, 'T-001', { agent: 'alice' });
+  expireLease(proj, 'T-001');
+  core.claimTask(proj, 'T-001', { agent: 'bob' });
+  assert.equal(core.readLock(proj, 'T-001').agent, 'bob');
+
+  writeFileSync(join(proj, '.ai', 'locks', 'T-001.lock'), JSON.stringify({ agent: 'old', ts: '2020-01-01T00:00:00Z' }));
+  assert.equal(core.leaseExpired(core.readLock(proj, 'T-001')), false);
+  assert.throws(() => core.claimTask(proj, 'T-001', { agent: 'bob' }), /claimed by 'old'/);
+}));
+
+test('validate warns about expired leases', () => withTmp(dir => {
+  const proj = diamondProject(dir);
+  core.startTask(proj, 'T-001', { agent: 'alice' });
+  assert.deepEqual(core.validateProject(proj).warnings, []);
+  expireLease(proj, 'T-001');
+  assert.match(core.validateProject(proj).warnings.join('\n'), /T-001's lease.*alice.*expired/);
+}));
