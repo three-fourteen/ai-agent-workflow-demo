@@ -416,6 +416,13 @@ file mutations.
 | Re-plan | `update_task` | Edit a pending task in place, or an in-progress one as its claimant (`agent`) |
 | | `remove_task` | Delete a pending, unclaimed task nothing depends on |
 
+Every tool declares an `outputSchema` and returns `structuredContent` alongside the text
+(MCP 2025-06-18), so clients can validate results instead of parsing prose. Structured
+content must be an object, so tools that return a list (`list_tasks`, `next_tasks`,
+`list_decisions`) are wrapped as `{ "items": [...] }` there; the text content keeps the
+original bare JSON, so clients that parse text keep working. Error results are plain
+`isError` text with no structured content.
+
 The server also sends `instructions` that tell agents to load all workflow tools in one
 lookup when their client defers tool schemas, instead of one lookup per call.
 

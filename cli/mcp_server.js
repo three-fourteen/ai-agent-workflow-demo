@@ -58,6 +58,71 @@ const DECISIONS_PROP = {
   description: 'Choices made on this task, one short single-line sentence each (e.g. "bookmarks file lives at ~/.bookmarks.json"). Stored on the task and shown to the next agent.',
 };
 
+// --- output schemas -------------------------------------------------------
+// MCP requires structuredContent to be a JSON object, so tools that return an array
+// are wrapped as { items: [...] } in structuredContent. The text content keeps the
+// original (unwrapped) JSON, so existing clients parsing text are unaffected.
+// Objects allow extra fields: schemas pin the fields agents rely on, not every field.
+const str = { type: 'string' };
+const bool = { type: 'boolean' };
+const nullableStr = { type: ['string', 'null'] };
+const strList = { type: 'array', items: str };
+const STATUS = { type: 'string', enum: ['pending', 'in-progress', 'completed', 'blocked', 'deferred'] };
+const obj = (properties, required = []) => ({ type: 'object', properties, required });
+const list = item => obj({ items: { type: 'array', items: item } }, ['items']);
+const TRANSITION = obj({ taskId: str, status: STATUS }, ['taskId', 'status']);
+const BATCH = {
+  ok: bool,
+  results: { type: 'array', items: obj({ id: str, ok: bool, error: str }, ['id', 'ok']) },
+  failed: { type: ['object', 'null'] },
+};
+
+const OUTPUT_SCHEMAS = {
+  get_state: obj({
+    project: str, phase: str, current_task: nullableStr, blocked: bool,
+    completed_tasks: strList, format_version: { type: 'integer' },
+  }, ['project', 'completed_tasks']),
+  list_tasks: list(obj({ id: str, status: STATUS, goal: str, dependencies: strList, verify: str }, ['id', 'status'])),
+  get_task: obj({ id: str, status: STATUS, goal: str, dependencies: strList, verify: str, raw: str }, ['id', 'status', 'raw']),
+  next_tasks: list(obj({ id: str, goal: str, dependencies: strList }, ['id'])),
+  start_task: obj({ taskId: str, status: STATUS, warning: str, reclaimedFrom: str }, ['taskId', 'status']),
+  start_tasks: obj({ ...BATCH, skipped: { type: 'array' } }, ['ok', 'results']),
+  complete_tasks: obj(BATCH, ['ok', 'results']),
+  verify_task: obj({ ran: bool, ok: bool, command: str, code: { type: ['integer', 'null'] }, timedOut: bool, infra: bool, stdout: str, stderr: str }, ['ran', 'ok']),
+  complete_task: obj({ taskId: str, status: STATUS, nextTask: nullableStr, verified: bool, evidence: bool }, ['taskId', 'status']),
+  record_decision: obj({ taskId: str, decisions: strList }, ['taskId', 'decisions']),
+  list_decisions: list(obj({ task: str, title: str, text: str }, ['task', 'text'])),
+  block_task: TRANSITION,
+  unblock_task: TRANSITION,
+  defer_task: TRANSITION,
+  reopen_task: TRANSITION,
+  reset_task: obj({ taskId: str, status: STATUS, currentTask: nullableStr }, ['taskId', 'status']),
+  release_task: obj({ taskId: str }, ['taskId']),
+  heartbeat_task: obj({ taskId: str, agent: str, expires: str }, ['taskId', 'expires']),
+  set_project_verify: obj({ projectVerify: nullableStr }),
+  create_worktree: obj({ branch: str, path: str }, ['branch', 'path']),
+  init_project: obj({ projectName: str, path: str }, ['projectName']),
+  set_brief: obj({ path: str, bytes: { type: 'integer' } }, ['path']),
+  plan_project: obj({
+    ok: bool, errors: strList, warnings: strList,
+    resolved: { type: 'array', items: obj({ key: str, id: str, title: str, depends_on: strList, verify: str, verify_expect: str }, ['key', 'id']) },
+    waves: { type: 'array', items: strList },
+  }, ['ok', 'errors', 'warnings']),
+  add_tasks: obj({
+    created: { type: 'array', items: obj({ key: str, id: str, file: str, verify: str }, ['key', 'id']) },
+    currentTask: nullableStr,
+  }, ['created']),
+  update_task: obj({ taskId: str, file: str }, ['taskId']),
+  remove_task: obj({ taskId: str, removed: bool, currentTask: nullableStr }, ['taskId', 'removed']),
+  migrate_project: obj({ migrated: { type: 'array' }, skipped: { type: 'array' }, dryRun: bool }, ['migrated']),
+  validate: obj({ ok: bool, errors: strList, warnings: strList }, ['ok', 'errors', 'warnings']),
+};
+
+/** Wrap a tool result for structuredContent (arrays become { items }). */
+function structured(value) {
+  return Array.isArray(value) ? { items: value } : value;
+}
+
 /** Build the tool table. `base` is the default project directory. */
 function buildTools(base) {
   // Resolve a path and refuse anything outside the launch directory, so an
@@ -73,7 +138,7 @@ function buildTools(base) {
   };
   const proj = args => (args && args.project ? confine(args.project, 'project') : base);
 
-  return [
+  const tools = [
     {
       name: 'get_state',
       description: 'Read PROJECT_STATE.json for a project.',
@@ -354,10 +419,13 @@ function buildTools(base) {
       run: a => core.validateProject(proj(a)),
     },
   ];
+  return tools.map(t => (OUTPUT_SCHEMAS[t.name] ? { ...t, outputSchema: OUTPUT_SCHEMAS[t.name] } : t));
 }
 
-function textResult(value) {
-  return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+function textResult(value, withStructured = false) {
+  const res = { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+  if (withStructured) res.structuredContent = structured(value);
+  return res;
 }
 function errorResult(message) {
   return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -381,7 +449,8 @@ async function runServer(base = '.') {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+    tools: tools.map(({ name, description, inputSchema, outputSchema }) =>
+      (outputSchema ? { name, description, inputSchema, outputSchema } : { name, description, inputSchema })),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -389,7 +458,7 @@ async function runServer(base = '.') {
     const tool = byName.get(name);
     if (!tool) return errorResult(`unknown tool '${name}'`);
     try {
-      return textResult(await tool.run(args || {}));
+      return textResult(await tool.run(args || {}), !!tool.outputSchema);
     } catch (err) {
       if (err instanceof core.WorkflowError) return errorResult(err.message);
       throw err;
