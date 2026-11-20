@@ -311,6 +311,34 @@ agent-workflow task complete T-001         # blocked if Verify fails
 agent-workflow task complete T-001 --force # override (records it as unverified)
 agent-workflow task complete T-001 --no-verify   # accept a task that has no Verify command
 ```
+
+#### Composing project-wide checks
+
+`project_verify` holds one command. If you need to retain an existing project-wide
+check and add another, point it at a small wrapper that runs both in order and exits
+on the first failure. For example, to keep `npm test` and then run an additional
+Node.js check, save this as `scripts/verify-all.js`:
+
+```js
+const { spawnSync } = require('node:child_process');
+
+function run(command, args) {
+  const executable = process.platform === 'win32' && command === 'npm'
+    ? 'npm.cmd'
+    : command;
+  const result = spawnSync(executable, args, { stdio: 'inherit' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+run('npm', ['test']);
+run(process.execPath, ['scripts/extra-check.js']);
+```
+
+Then set `project_verify` to `node scripts/verify-all.js` using the project's
+configuration command. Replace the example commands with the checks your project
+already uses and needs to add; do not remove an existing check when composing them.
+
 **Flaky verifiers.** A failed check is classified so transient problems never become
 false completions *or* dead ends:
 
