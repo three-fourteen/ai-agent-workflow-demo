@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test \"cli/*.test.js\"",
+    "test": "node --test cli/core.test.js cli/agent_workflow.test.js cli/mcp_server.test.js",
     "prepublishOnly": "npm test"
   },
   "files": [
