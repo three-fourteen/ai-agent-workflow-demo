@@ -1334,3 +1334,16 @@ test('a killed verify command is flagged infra', () => withTmp(dir => {
   assert.equal(v.infra, true);
   assert.equal(v.ok, false);
 }));
+
+const fs = require('node:fs');
+test('initProject writes a root AGENTS.md and never overwrites an existing one', () => withTmp(dir => {
+  const a = join(dir, 'a');
+  core.initProject(a, '');
+  assert.match(fs.readFileSync(join(a, 'AGENTS.md'), 'utf8'), /AGENT_START_HERE/);
+
+  const b = join(dir, 'b');
+  fs.mkdirSync(b);
+  fs.writeFileSync(join(b, 'AGENTS.md'), 'mine\n');
+  core.initProject(b, '', { inPlace: true });
+  assert.equal(fs.readFileSync(join(b, 'AGENTS.md'), 'utf8'), 'mine\n');
+}));

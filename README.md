@@ -79,6 +79,7 @@ Unlike the other demos it contains real code: `cd bookmarks && npm test`.
 Each project contains:
 
 ```
+AGENTS.md              # cross-agent entry point (created by init, never overwritten)
 .ai/
   AGENT_START_HERE.md
   PROJECT_STATE.json
@@ -127,7 +128,17 @@ Codex → finishes
 
 # Installation
 
-### Option A — npx (one-shot, no install)
+### Option A — from npm (recommended)
+
+```bash
+npx @three-fourteen/agent-workflow init my-project
+npm install -g @three-fourteen/agent-workflow   # provides agent-workflow and afw
+claude mcp add agent-workflow -- npx -y @three-fourteen/agent-workflow mcp .
+```
+
+> The unscoped `agent-workflow` name on npm belongs to an unrelated package. Maintainers: `npm publish` runs the test suite first (`prepublishOnly`).
+
+### Option A2 — from GitHub (npx, no install)
 
 Use npx to scaffold a project without installing anything permanently:
 
@@ -589,6 +600,22 @@ Completed: 0/2 tasks.
 ```
 
 ---
+
+# Cross-agent entry point and skill
+
+`init` writes a root `AGENTS.md` (the emerging cross-agent convention) that points any
+agent at `.ai/AGENT_PLAN_HERE.md` or `.ai/AGENT_START_HERE.md`. An existing `AGENTS.md` is
+never overwritten. Claude Code reads `CLAUDE.md`; add a line `@AGENTS.md` to share it.
+
+A ready-made skill lives in [`skills/agent-workflow/SKILL.md`](skills/agent-workflow/SKILL.md).
+Copy it to `.claude/skills/agent-workflow/` to have Claude load the plan/execute loop on demand.
+
+# CI
+
+[`.github/workflows/test.yml`](.github/workflows/test.yml) runs the unit tests on Node 18/20/22 and
+[`validate.yml`](.github/workflows/validate.yml) also
+runs `agent-workflow validate` against every project in the repo, so a broken task graph
+fails the PR.
 
 # How to try it
 

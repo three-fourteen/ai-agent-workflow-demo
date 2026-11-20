@@ -1,7 +1,7 @@
 {
-  "name": "agent-workflow",
+  "name": "@three-fourteen/agent-workflow",
   "version": "0.1.0",
-  "description": "CLI for the git-native AI agent workflow",
+  "description": "Git-native task orchestration for AI coding agents (CLI + MCP server)",
   "license": "MIT",
   "bin": {
     "agent-workflow": "./cli/agent_workflow.js",
@@ -11,16 +11,40 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test \"cli/*.test.js\""
+    "test": "node --test \"cli/*.test.js\"",
+    "prepublishOnly": "npm test"
   },
   "files": [
     "cli/agent_workflow.js",
     "cli/core.js",
     "cli/templates.js",
     "cli/mcp_server.js",
-    "schema/project-state.schema.json"
+    "schema/project-state.schema.json",
+    "skills/agent-workflow/SKILL.md",
+    "README.md",
+    "LICENSE"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/three-fourteen/ai-agent-workflow-demo.git"
+  },
+  "homepage": "https://github.com/three-fourteen/ai-agent-workflow-demo#readme",
+  "bugs": {
+    "url": "https://github.com/three-fourteen/ai-agent-workflow-demo/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "mcp",
+    "model-context-protocol",
+    "agents-md",
+    "workflow",
+    "claude-code",
+    "task-orchestration"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

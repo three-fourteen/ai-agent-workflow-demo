@@ -1,0 +1,31 @@
+name: Validate workflow
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate every project's task graph
+        run: |
+          status=0
+          for dir in . social-feed dashboard mini-saas bookmarks; do
+            [ -f "$dir/.ai/PROJECT_STATE.json" ] || continue
+            echo "== $dir"
+            node cli/agent_workflow.js validate "$dir" || status=1
+          done
+          exit $status
+      - name: Bookmarks demo tests
+        run: cd bookmarks && npm test

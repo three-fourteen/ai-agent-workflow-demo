@@ -360,6 +360,10 @@ function initProject(project, description, { inPlace: forceInPlace = false, name
   fs.writeFileSync(path.join(aiDir, 'TASK_INDEX.json'),     templates.TASK_INDEX + '\n','utf8');
   fs.writeFileSync(path.join(aiDir, '.gitignore'),          'locks/\nstate.lock\n*.tmp\n',                 'utf8');
 
+  // Root AGENTS.md is the cross-agent entry point. Never overwrite one that exists.
+  const agentsMd = path.join(project, 'AGENTS.md');
+  if (!fs.existsSync(agentsMd)) fs.writeFileSync(agentsMd, templates.AGENTS_MD, 'utf8');
+
   const projectName = name || (inPlace ? path.basename(path.resolve(project)) : project);
   const state = {
     project: projectName,
