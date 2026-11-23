@@ -76,7 +76,7 @@ function agentName(flags) {
 
 function cmdTaskStart(project, taskId, agent) {
   const r = core.startTask(project, taskId, { agent });
-  console.log(`${r.taskId} → in-progress`);
+  console.log(`${r.taskId} → in-progress${r.reclaimedFrom ? ` (reclaimed from '${r.reclaimedFrom}': lease expired)` : ''}`);
   if (r.warning) process.stderr.write(`Warning: ${r.warning}\n`);
 }
 
@@ -225,6 +225,11 @@ function cmdClaim(project, taskId, agent) {
 function cmdRelease(project, taskId) {
   const r = core.releaseTask(project, taskId);
   console.log(`${r.taskId} released`);
+}
+
+function cmdHeartbeat(project, taskId, agent) {
+  const r = core.heartbeatTask(project, taskId, { agent });
+  console.log(`${r.taskId} lease renewed for '${r.agent}' until ${r.expires}`);
 }
 
 function cmdWorktree(project, taskId) {
@@ -390,6 +395,7 @@ Usage:
   agent-workflow next [<project>] [--all] [--json]
   agent-workflow claim [<project>] <id> [--agent NAME]
   agent-workflow release [<project>] <id>
+  agent-workflow heartbeat [<project>] <id> [--agent NAME]   renew a claim's lease (default 30 min, AFW_LEASE_TTL_MS)
   agent-workflow worktree [<project>] <id>
   agent-workflow status [<project>]
   agent-workflow verify-config [<project>] [--set "<command>" | --clear]
@@ -492,6 +498,11 @@ function main() {
     const { positional } = parseFlags(rest);
     const { project, taskId } = resolveTaskArgs(positional, 'release');
     cmdRelease(project, taskId);
+
+  } else if (command === 'heartbeat') {
+    const { flags, positional } = parseFlags(rest);
+    const { project, taskId } = resolveTaskArgs(positional, 'heartbeat');
+    cmdHeartbeat(project, taskId, flags.agent || process.env.AFW_AGENT || '');
 
   } else if (command === 'worktree') {
     const { positional } = parseFlags(rest);
