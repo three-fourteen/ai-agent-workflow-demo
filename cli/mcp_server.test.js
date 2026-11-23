@@ -407,3 +407,68 @@ test('start_tasks and complete_tasks run a wave in one call each', async () => {
     assert.equal(invalid.isError, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// outputSchema / structuredContent
+// ---------------------------------------------------------------------------
+
+test('every tool declares an outputSchema', async () => {
+  await withServer(async ({ client }) => {
+    const { tools } = await client.listTools();
+    const missing = tools.filter(t => !t.outputSchema).map(t => t.name);
+    assert.deepEqual(missing, []);
+  });
+});
+
+test('results carry structuredContent that validates; arrays are wrapped, text is unchanged', async () => {
+  await withServer(async ({ client }) => {
+    // The SDK client validates structuredContent against each tool's outputSchema
+    // on every call, so a schema that disagrees with a real result throws here.
+    const call = async (name, args = {}) => {
+      const res = await client.callTool({ name, arguments: args });
+      assert.ok(!res.isError, `${name}: ${res.content[0].text}`);
+      assert.ok(res.structuredContent, `${name} has structuredContent`);
+      return res;
+    };
+
+    const list = await call('list_tasks');
+    assert.ok(Array.isArray(payload(list)), 'text content is still the bare array');
+    assert.deepEqual(list.structuredContent.items, payload(list));
+
+    await call('get_state');
+    await call('get_task', { id: 'T-001' });
+    await call('next_tasks');
+    await call('start_task', { id: 'T-001', agent: 'a' });
+    await call('heartbeat_task', { id: 'T-001', agent: 'a' });
+    await call('verify_task', { id: 'T-001' });
+    await call('record_decision', { id: 'T-001', decisions: ['x'] });
+    await call('list_decisions');
+    await call('update_task', { id: 'T-001', goal: 'g', agent: 'a' });
+    await call('set_project_verify', { command: 'true' });
+    await call('complete_task', { id: 'T-001', no_verify: true });
+    await call('start_tasks', { ids: ['T-002'], agent: 'a' });
+    await call('complete_tasks', { ids: ['T-002'], no_verify: true });
+    await call('plan_project', { tasks: [{ key: 'p', title: 'P' }, { key: 'q', title: 'Q', depends_on: ['p'] }] });
+    await call('add_tasks', { tasks: [{ key: 'p', title: 'P' }, { key: 'q', title: 'Q' }, { key: 'r', title: 'R' }] });
+    await call('block_task', { id: 'T-003', reason: 'r' });
+    await call('unblock_task', { id: 'T-003' });
+    await call('defer_task', { id: 'T-003' });
+    await call('reopen_task', { id: 'T-003' });
+    await call('start_task', { id: 'T-003' });
+    await call('reset_task', { id: 'T-003' });
+    await call('release_task', { id: 'T-003' });
+    await call('remove_task', { id: 'T-005' });
+    await call('set_brief', { content: 'brief' });
+    await call('migrate_project');
+    const v = await call('validate');
+    assert.equal(v.structuredContent.ok, true);
+  });
+});
+
+test('error results stay plain isError text without structuredContent', async () => {
+  await withServer(async ({ client }) => {
+    const res = await client.callTool({ name: 'start_task', arguments: { id: 'T-099' } });
+    assert.equal(res.isError, true);
+    assert.equal(res.structuredContent, undefined);
+  });
+});
